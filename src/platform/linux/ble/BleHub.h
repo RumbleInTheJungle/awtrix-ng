@@ -58,6 +58,8 @@ class BleHub {
   enum Resource { kLinks, kSubscriptions, kAdverts, kServices };
   struct InputProbe {
     unsigned samples = 0;
+    uint16_t config = 0;
+    uint16_t enableValue = 1;
     int64_t nextAt = 0;
     bool pending = false;
     Bytes previous;
@@ -119,6 +121,7 @@ class BleHub {
   void addToSubscription(const Key& key, int link, const GattClient::Characteristic& c);
   void readInitialReport(int link, uint16_t handle);
   void sampleInputReport(int link, uint16_t handle);
+  void readNotificationConfig(int link, uint16_t config, uint16_t expected);
   void readSecured(int link, uint16_t handle, bool retried, std::function<void(bool ok, const Bytes& value)> done);
   void failSubscription(int link, uint16_t handle, uint8_t code);
   void deliver(const Key& key, Subscription& sub, const std::string& json);

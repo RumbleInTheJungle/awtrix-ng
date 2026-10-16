@@ -92,6 +92,13 @@ are logged, but a read alone does not make a gamepad Ready: live input still req
 notification. The first
 three notifications or indications on each connection log their handle, length and subscriber
 count, including values with no matching subscription. Their payloads are not logged.
+
+If no notification has arrived by the second successful input sample, the hub repeats the selected
+configuration once as a Write Command without response, matching the CCCD operation used by
+Pybricks' Technic Hub CC2640 driver. It then reads the configuration back. A command accepted by
+the local send path is logged as queued, not as a peer acknowledgement. Working notification
+streams do not take this retry, and the retry alone never makes a gamepad Ready.
+
 The same gamepad initialization reads back the notification configuration descriptor and logs
 its value, the expected value and whether they match. A read error is logged without deliberately
 ending the subscription. The Linux socket backend independently logs its first three ATT

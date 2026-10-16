@@ -184,27 +184,37 @@ void BleHub::readInitialReport(int id, uint16_t handle) {
   for (const auto& service : l->second.client->services()) {
     for (const auto& c : service.characteristics) {
       if (c.value != handle) continue;
-      Bytes expectedConfig;
-      put16(expectedConfig, (c.props & att::kPropNotify) ? 1 : 2);
+      const uint16_t enableValue = (c.props & att::kPropNotify) ? 1 : 2;
       const uint16_t config = c.clientConfig;
-      l->second.client->read(config, [this, id, config, expectedConfig](bool ok, uint8_t code, const Bytes& value) {
-        if (log) log("ble: link " + std::to_string(id) + " notification config readback handle " +
-                     std::to_string(config) + (ok ? ": " + toHex(value) + ", expected " + toHex(expectedConfig) +
-                     (value == expectedConfig ? " (match)" : " (mismatch)") :
-                     ": failed (ATT " + std::to_string(code) + ")"));
-      });
+      readNotificationConfig(id, config, enableValue);
       if (!(c.props & att::kPropRead)) {
         if (log) log("ble: link " + std::to_string(id) + " initial input read skipped: handle " +
                      std::to_string(handle) + " is not readable");
         return;
       }
       if (!l->second.liveInputs.count(handle)) {
-        l->second.inputProbes.emplace(handle, InputProbe{});
+        InputProbe probe;
+        probe.config = config;
+        probe.enableValue = enableValue;
+        l->second.inputProbes.emplace(handle, std::move(probe));
         sampleInputReport(id, handle);
       }
       return;
     }
   }
+}
+
+void BleHub::readNotificationConfig(int id, uint16_t config, uint16_t expected) {
+  auto l = links_.find(id);
+  if (l == links_.end() || !l->second.client) return;
+  Bytes expectedConfig;
+  put16(expectedConfig, expected);
+  l->second.client->read(config, [this, id, config, expectedConfig](bool ok, uint8_t code, const Bytes& value) {
+    if (log) log("ble: link " + std::to_string(id) + " notification config readback handle " +
+                 std::to_string(config) + (ok ? ": " + toHex(value) + ", expected " + toHex(expectedConfig) +
+                 (value == expectedConfig ? " (match)" : " (mismatch)") :
+                 ": failed (ATT " + std::to_string(code) + ")"));
+  });
 }
 
 // Six samples, three seconds apart, compare input privately while notifications are absent.
@@ -231,6 +241,18 @@ void BleHub::sampleInputReport(int id, uint16_t handle) {
     probe->second.previous = value;
     probe->second.pending = false;
     probe->second.nextAt = now_ + 3000;
+    // Pybricks' Technic Hub driver enables the CCCD with Write Command, not Write Request.
+    if (sample == 2) {
+      const uint16_t config = probe->second.config;
+      const uint16_t enableValue = probe->second.enableValue;
+      Bytes on;
+      put16(on, enableValue);
+      l->second.client->write(config, on, false, [this, id, config, enableValue](bool sent, uint8_t, const Bytes&) {
+        if (log) log("ble: link " + std::to_string(id) + " notification config Write Command handle " +
+                     std::to_string(config) + (sent ? " queued (no response); reading back" : " could not be queued"));
+        if (sent) readNotificationConfig(id, config, enableValue);
+      });
+    }
   });
 }
 

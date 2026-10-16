@@ -878,6 +878,38 @@ void gamepadReadsSelectedInputAfterSubscribing() {
   r.hub.tick(r.now);
   r.step();
   check(r.radio.sent.size() == sent, "live input cancels further diagnostic reads");
+  check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
+    return !packet.second.empty() && packet.second[0] == att::kWriteCmd;
+  }), "a working notification stream needs no configuration Write Command");
+}
+
+void gamepadRetriesConfigurationLikeTechnicHub() {
+  PadRig r(true);
+  unsigned configurations = 0;
+  r.radio.peerDb.onSubscribe = [&](int, uint16_t handle, uint16_t value) {
+    if (handle == r.handles[1] && value == 1 && ++configurations == 2)
+      r.radio.notifyPeer(handle, eightBitDoReport(15, 1));
+  };
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("02:00:00:00:00:23", "Xbox Wireless Controller");
+  check(r.status() == GamepadStatus::Connecting && configurations == 1,
+        "a peer silent after the first configuration stays connecting");
+  r.now += 3000;
+  r.hub.tick(r.now);
+  r.step();
+  check(r.status() == GamepadStatus::Ready && r.buttons() == 1,
+        "a peer activated by the repeated configuration becomes ready on its notification");
+  const auto count = std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
+    return packet.second.size() == 5 && packet.second[0] == att::kWriteCmd && le16(packet.second.data() + 3) == 1;
+  });
+  check(count == 1, "configuration retry uses one Write Command containing 0100");
+  const auto sent = r.radio.sent.size();
+  r.now += 9000;
+  r.hub.tick(r.now);
+  r.step();
+  check(r.radio.sent.size() == sent, "successful recovery stops polling and configuration retries");
 }
 
 void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
@@ -903,6 +935,9 @@ void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
     r.step();
   }
   check(samples() == 6, "input sampling stops after six reads");
+  check(std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
+    return !packet.second.empty() && packet.second[0] == att::kWriteCmd;
+  }) == 1, "a silent peer gets at most one configuration Write Command");
   check(r.status() == GamepadStatus::Connecting && r.buttons() == 0,
         "diagnostic snapshots never mark the gamepad ready or publish controls");
   check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
@@ -1285,6 +1320,7 @@ int main() {
   builtInGamepad();
   gamepadWaitsForEncryption();
   gamepadReadsSelectedInputAfterSubscribing();
+  gamepadRetriesConfigurationLikeTechnicHub();
   gamepadSamplingIsBoundedAndDoesNotPublishControls();
   gamepadSecurityFailure();
   pairingEnds();
