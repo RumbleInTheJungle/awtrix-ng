@@ -74,6 +74,14 @@ input reports are logged per connection. BLE logs include the Report Reference d
 notification configuration results, security requests and their completion or timeout. No pairing
 keys or input payloads are logged.
 
+After notification configuration succeeds, a gamepad subscription requests one read of the
+selected Input Report value if it is readable. This follows the Xbox initialization sequence
+in Pybricks. The hub's internal `readInitial` subscription flag requests this read; script
+subscriptions keep their existing behavior. Read results and ATT errors are logged, but a read
+alone does not make a gamepad Ready: live input still requires a valid notification. The first
+three notifications or indications on each connection log their handle, length and subscriber
+count, including values with no matching subscription. Their payloads are not logged.
+
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
 events go through one queue in the manager, so reports from the two gamepads are handled in
 arrival order. A session reports through callbacks: a status change, a change of its remembered

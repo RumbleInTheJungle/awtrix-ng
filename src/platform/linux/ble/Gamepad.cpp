@@ -234,7 +234,8 @@ void Gamepad::subscribe() {
   if (log_) log_("gamepad: subscribing to input report " + std::to_string(layout_.reportId));
   std::string args;
   JsonWriter w(args);
-  w.beginObject().key("conn").value(static_cast<long long>(connId_)).key("svc").value("1812").key("chr").value("2a4d");
+  w.beginObject().key("conn").value(static_cast<long long>(connId_)).key("svc").value("1812").key("chr").value("2a4d")
+      .key("readInitial").value(true);
   if (layout_.reportId) {
     const Bytes reference{static_cast<uint8_t>(layout_.reportId), 1};
     w.key("desc").beginObject().key("2908").value(toHex(reference)).endObject();

@@ -792,13 +792,15 @@ struct PadRig {
   std::vector<uint16_t> handles;
   std::vector<std::string> logs;
   int64_t now = 1000;
-  PadRig() {
+  explicit PadRig(bool readableInput = false) {
+    hub.log = [this](const std::string& line) { logs.push_back(line); };
     check(::mkdtemp(directory) != nullptr, "gamepad fixture gets a directory");
     path = std::string(directory) + "/gamepad.json";
     // The gamepad's report 1 and a second input report of the same length, report 2.
     radio.peerDb.addService(Uuid::from16(0x1812),
                             {{Uuid::from16(0x2a4b), att::kPropRead, false, eightBitDoMap(), {}},
-                             {Uuid::from16(0x2a4d), att::kPropNotify, false, {}, {{Uuid::from16(0x2908), Bytes{1, 1}}}},
+                             {Uuid::from16(0x2a4d), static_cast<uint8_t>(att::kPropNotify | (readableInput ? att::kPropRead : 0)),
+                              false, readableInput ? eightBitDoReport(15, 0) : Bytes{}, {{Uuid::from16(0x2908), Bytes{1, 1}}}},
                              {Uuid::from16(0x2a4d), att::kPropNotify, false, {}, {{Uuid::from16(0x2908), Bytes{2, 1}}}}},
                             handles);
     radio.peerDb.drain();
@@ -841,6 +843,34 @@ struct PadRig {
     step();
   }
 };
+
+void gamepadReadsSelectedInputAfterSubscribing() {
+  PadRig r(true);
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  int reads = 0;
+  bool configured = false;
+  for (const auto& packet : r.radio.sent) {
+    const Bytes& pdu = packet.second;
+    if (pdu.size() == 5 && pdu[0] == att::kWriteReq && le16(pdu.data() + 3) == 1) configured = true;
+    if (pdu.size() != 3 || pdu[0] != att::kReadReq) continue;
+    const uint16_t handle = le16(pdu.data() + 1);
+    check(handle != r.handles[2], "initial read does not touch the other input report");
+    if (handle == r.handles[1]) {
+      ++reads;
+      check(configured, "initial input read follows notification configuration");
+    }
+  }
+  check(reads == 1, "readable selected input is read once without waiting for button movement");
+  check(r.status() == GamepadStatus::Connecting, "a readable snapshot alone does not mark live input ready");
+  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
+    return has(line, "bytes; waiting for notifications");
+  }), "initial input read result is logged");
+  r.report(1);
+  check(r.status() == GamepadStatus::Ready && r.buttons() == 1, "notification after initial read establishes live input");
+}
 
 void gamepadWaitsForEncryption() {
   PadRig r;
@@ -1163,6 +1193,7 @@ int main() {
   hidReports();
   builtInGamepad();
   gamepadWaitsForEncryption();
+  gamepadReadsSelectedInputAfterSubscribing();
   gamepadSecurityFailure();
   pairingEnds();
   retriesSlowDown();

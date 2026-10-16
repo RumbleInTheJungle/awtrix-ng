@@ -120,6 +120,7 @@ std::string BleHub::subscribe(const Key& key, const std::string& args) {
   const int id = users_[Key{key.script, static_cast<uint32_t>(number(args, "conn", 0))}];
   Subscription& sub = subscriptions_[key];
   sub.link = id;
+  sub.readInitial = api::memberFlag(args, "readInitial");
   sub.intervalMs = std::min<long long>(60000, std::max<long long>(0, number(args, "interval", 0)));
   if (!filtered) {
     for (const GattClient::Characteristic* c : targets) addToSubscription(key, id, *c);
@@ -165,6 +166,38 @@ void BleHub::addToSubscription(const Key& key, int id, const GattClient::Charact
   std::set<Key>& subs = l->second.subscribers[c.value];
   subs.insert(key);
   if (subs.size() == 1) enableNotifications(id, c.clientConfig, c.value, (c.props & att::kPropNotify) ? 1 : 2, false);
+  else if (l->second.notificationsEnabled.count(c.value)) readInitialReport(id, c.value);
+}
+
+// Xbox initialization reads the selected input value after the CCCD write. Only notifications
+// establish readiness: a readable snapshot alone does not prove that live input works.
+void BleHub::readInitialReport(int id, uint16_t handle) {
+  auto l = links_.find(id);
+  if (l == links_.end() || !l->second.client) return;
+  auto subscribers = l->second.subscribers.find(handle);
+  if (subscribers == l->second.subscribers.end()) return;
+  const bool wanted = std::any_of(subscribers->second.begin(), subscribers->second.end(), [this](const Key& key) {
+    auto s = subscriptions_.find(key);
+    return s != subscriptions_.end() && s->second.readInitial;
+  });
+  if (!wanted || !l->second.initialReads.insert(handle).second) return;
+  for (const auto& service : l->second.client->services()) {
+    for (const auto& c : service.characteristics) {
+      if (c.value != handle) continue;
+      if (!(c.props & att::kPropRead)) {
+        if (log) log("ble: link " + std::to_string(id) + " initial input read skipped: handle " +
+                     std::to_string(handle) + " is not readable");
+        return;
+      }
+      if (log) log("ble: link " + std::to_string(id) + " reading initial input at handle " + std::to_string(handle));
+      l->second.client->read(handle, [this, id, handle](bool ok, uint8_t code, const Bytes& value) {
+        if (log) log("ble: link " + std::to_string(id) + " initial input handle " + std::to_string(handle) +
+                     (ok ? ": " + std::to_string(value.size()) + " bytes; waiting for notifications" :
+                           ": read failed (ATT " + std::to_string(code) + ")"));
+      });
+      return;
+    }
+  }
 }
 
 // Reads a value, pairing first when the peer keeps it for paired centrals.
@@ -209,7 +242,14 @@ void BleHub::enableNotifications(int id, uint16_t config, uint16_t handle, uint1
     if (log) log("ble: link " + std::to_string(id) + " notifications value handle " + std::to_string(handle) +
                  ", config handle " + std::to_string(config) + (retried ? ", retry: " : ": ") +
                  (ok ? "enabled" : "failed (ATT " + std::to_string(code) + ")"));
-    if (ok) return;
+    if (ok) {
+      auto link = links_.find(id);
+      if (link != links_.end()) {
+        link->second.notificationsEnabled.insert(handle);
+        readInitialReport(id, handle);
+      }
+      return;
+    }
     const bool needsPairing = code == att::kInsufficientAuthentication || code == att::kInsufficientEncryption;
     auto link = links_.find(id);
     if (needsPairing && !retried && link != links_.end() && radio_.security(id) < 2 && radio_.secure(id, 2)) {
@@ -230,6 +270,8 @@ void BleHub::failSubscription(int id, uint16_t handle, uint8_t code) {
   if (s == l->second.subscribers.end()) return;
   const std::set<Key> keys = std::move(s->second);
   l->second.subscribers.erase(s);
+  l->second.notificationsEnabled.erase(handle);
+  l->second.initialReads.erase(handle);
   for (const Key& k : keys) {
     auto mine = subscriptions_.find(k);
     if (mine == subscriptions_.end()) continue;
@@ -255,6 +297,8 @@ void BleHub::releaseSubscription(Key key, bool tellScript) {
     s->second.erase(key);
     if (!s->second.empty()) continue;
     l->second.subscribers.erase(s);
+    l->second.notificationsEnabled.erase(handle);
+    l->second.initialReads.erase(handle);
     if (!l->second.client) continue;
     for (const GattClient::Service& svc : l->second.client->services())
       for (const GattClient::Characteristic& c : svc.characteristics)

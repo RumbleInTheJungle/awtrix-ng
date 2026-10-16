@@ -64,6 +64,9 @@ class BleHub {
     std::set<Key> waiting;
     std::set<Key> users;
     std::map<uint16_t, std::set<Key>> subscribers;
+    std::set<uint16_t> notificationsEnabled;
+    std::set<uint16_t> initialReads;
+    unsigned loggedValues = 0;
     std::vector<Key> pairing;
     std::vector<std::function<void(bool)>> afterSecure;
   };
@@ -71,6 +74,7 @@ class BleHub {
   // the newest, and the last one of a burst follows once its interval is over.
   struct Subscription {
     int link = 0;
+    bool readInitial = false;
     std::vector<uint16_t> handles;
     int64_t intervalMs = 0;
     int64_t lastSent = -1;
@@ -103,6 +107,7 @@ class BleHub {
   void releaseSubscription(Key key, bool tellScript);
   void enableNotifications(int link, uint16_t config, uint16_t handle, uint16_t value, bool retried);
   void addToSubscription(const Key& key, int link, const GattClient::Characteristic& c);
+  void readInitialReport(int link, uint16_t handle);
   void readSecured(int link, uint16_t handle, bool retried, std::function<void(bool ok, const Bytes& value)> done);
   void failSubscription(int link, uint16_t handle, uint8_t code);
   void deliver(const Key& key, Subscription& sub, const std::string& json);
