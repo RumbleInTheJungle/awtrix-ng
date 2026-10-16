@@ -391,6 +391,7 @@ void BleHub::releaseUser(Key key, int id, bool tellScript) {
     // A late security result must not restart discovery after the last client lets go.
     l->second.secureDiscovery = false;
     l->second.securingDiscovery = false;
+    l->second.exchangeMtu = true;
     retire(l->second, "disconnected");
     l->second.subscribers.clear();
     l->second.ready = true;

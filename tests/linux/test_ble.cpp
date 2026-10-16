@@ -127,7 +127,7 @@ void advertising() {
 }
 
 // A client and a server talking to each other directly: discovery, read, write, notify.
-void clientAgainstServer() {
+void clientAgainstServer(bool exchangeMtu = true) {
   GattServer server;
   server.setDeviceName("PEER");
   std::vector<uint16_t> handles;
@@ -139,7 +139,9 @@ void clientAgainstServer() {
   check(svc > 0 && handles.size() == 3, "a service with three characteristics is added");
   server.linkUp(1);
   std::deque<Bytes> toServer, toClient;
+  std::vector<Bytes> requests;
   GattClient client([&](const Bytes& pdu) {
+    requests.push_back(pdu);
     toServer.push_back(pdu);
     return true;
   });
@@ -164,10 +166,12 @@ void clientAgainstServer() {
       }
     }
   };
-  client.start(0);
+  client.start(0, exchangeMtu);
   run();
   check(ready, "discovery finishes");
-  check(client.mtu() == att::kMaxMtu, "both sides agree on the largest MTU");
+  check(client.mtu() == (exchangeMtu ? att::kMaxMtu : att::kDefaultMtu), "client uses the selected MTU policy");
+  check(requests.front()[0] == (exchangeMtu ? att::kMtuReq : att::kReadByGroupReq),
+        "default-MTU discovery starts directly with service discovery");
   check(client.services().size() == 3, "GAP, GATT and the script's service are found");
   const GattClient::Characteristic* c = client.find(uuid("fff0"), uuid("fff1"));
   check(c && c->value == handles[0] && c->clientConfig == handles[0] + 1, "the notify characteristic and its CCCD are found");
@@ -792,13 +796,19 @@ struct PadRig {
   std::vector<uint16_t> handles;
   std::vector<std::string> logs;
   int64_t now = 1000;
-  explicit PadRig(bool readableInput = false) {
+  explicit PadRig(bool readableInput = false, bool compactInput = false) {
     hub.log = [this](const std::string& line) { logs.push_back(line); };
     check(::mkdtemp(directory) != nullptr, "gamepad fixture gets a directory");
     path = std::string(directory) + "/gamepad.json";
     // The gamepad's report 1 and a second input report of the same length, report 2.
+    Bytes reportMap = eightBitDoMap();
+    if (compactInput) {
+      // Six vendor bytes instead of 23: a 16-byte input fits the default ATT MTU.
+      for (std::size_t i = 0; i + 1 < reportMap.size(); ++i)
+        if (reportMap[i] == 0x95 && reportMap[i + 1] == 0x17) reportMap[i + 1] = 6;
+    }
     radio.peerDb.addService(Uuid::from16(0x1812),
-                            {{Uuid::from16(0x2a4b), att::kPropRead, false, eightBitDoMap(), {}},
+                            {{Uuid::from16(0x2a4b), att::kPropRead, false, reportMap, {}},
                              {Uuid::from16(0x2a4d), static_cast<uint8_t>(att::kPropNotify | (readableInput ? att::kPropRead : 0)),
                               false, readableInput ? eightBitDoReport(15, 0) : Bytes{}, {{Uuid::from16(0x2908), Bytes{1, 1}}}},
                              {Uuid::from16(0x2a4d), att::kPropNotify, false, {}, {{Uuid::from16(0x2908), Bytes{2, 1}}}}},
@@ -849,7 +859,7 @@ void gamepadReadsSelectedInputAfterSubscribing() {
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
-  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
   int reads = 0;
   bool configured = false;
   for (const auto& packet : r.radio.sent) {
@@ -893,7 +903,7 @@ void gamepadRetriesConfigurationLikeTechnicHub() {
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
-  r.advert("02:00:00:00:00:23", "Xbox Wireless Controller");
+  r.advert("02:00:00:00:00:23", "8BitDo Ultimate");
   check(r.status() == GamepadStatus::Connecting && configurations == 1,
         "a peer silent after the first configuration stays connecting");
   r.now += 3000;
@@ -917,7 +927,7 @@ void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
-  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
   r.now += 2999;
   r.hub.tick(r.now);
   r.step();
@@ -948,13 +958,30 @@ void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
   }), "unchanged samples are distinguished from changes");
 }
 
+void xboxUsesDefaultMtu() {
+  PadRig r(false, true);
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("68:6C:E6:7A:21:A5", "Xbox");
+  check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
+    return !packet.second.empty() && packet.second[0] == att::kMtuReq;
+  }), "Xbox discovery does not initiate MTU exchange");
+  Bytes input = eightBitDoReport(15, 1);
+  input.resize(16);
+  r.radio.notifyPeer(r.handles[1], input);
+  r.step();
+  check(r.status() == GamepadStatus::Ready && r.buttons() == 1,
+        "a 16-byte Xbox-style report establishes input at MTU 23");
+}
+
 void gamepadWaitsForEncryption() {
   PadRig r;
   r.radio.deferSecurity = true;
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
-  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
   const int link = r.linkOf("68:6C:E6:7A:21:A5");
   const auto readMap = [&] {
     return std::any_of(r.radio.sent.begin(), r.radio.sent.end(), [&](const auto& packet) {
@@ -979,7 +1006,7 @@ void gamepadSecurityFailure() {
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
-  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
   r.radio.events.secured(r.linkOf("68:6C:E6:7A:21:A5"), false, "pairing failed (status 5)");
   r.step();
   check(r.status() == GamepadStatus::Pairing, "failed security returns to pairing for a retry");
@@ -1225,6 +1252,22 @@ void pairingIsBoundedAndIdempotent() {
         "pairing timeout preserves the first controller");
 }
 
+void serverMtuLimitPreservesExistingNegotiation() {
+  GattServer server;
+  server.linkUp(1);
+  server.linkUp(2);
+  check(server.limitMtu(1, 23), "a new link can be limited to the default MTU");
+  const Bytes request{att::kMtuReq, 247, 0};
+  const Bytes limited = server.handle(1, request.data(), request.size(), 1);
+  check(limited == Bytes({att::kMtuRsp, 23, 0}) && server.mtu(1) == 23,
+        "a peer-initiated MTU exchange respects the gamepad limit");
+  const Bytes normal = server.handle(2, request.data(), request.size(), 1);
+  check(normal == Bytes({att::kMtuRsp, 247, 0}) && server.mtu(2) == 247,
+        "the gamepad MTU limit does not affect another link");
+  check(!server.limitMtu(2, 23) && server.mtu(2) == 247,
+        "an already negotiated larger MTU is not lowered in place");
+}
+
 void encryptedDiscoveryPreservesConnectionOwnership() {
   for (int mode = 0; mode < 3; ++mode) {
     for (int outcome = 0; outcome < 4; ++outcome) {
@@ -1239,7 +1282,7 @@ void encryptedDiscoveryPreservesConnectionOwnership() {
         r.radio.events.accepted(7, peer);
       };
       if (mode == 1) accept();
-      r.hub.call("a", "connect", R"({"addr":"02:00:00:00:00:23","secure":true})", 1, r.now);
+      r.hub.call("a", "connect", R"({"addr":"02:00:00:00:00:23","secure":true,"exchangeMtu":false})", 1, r.now);
       if (mode == 2) accept();
       r.settle();
       const int id = mode == 0 ? 100 : 7;
@@ -1259,6 +1302,8 @@ void encryptedDiscoveryPreservesConnectionOwnership() {
         check(!r.radio.sent.empty() && has(r.events.last("a", 1), "\"connected\":true"),
               "confirmed security starts discovery on the correct physical link");
         check(r.radio.sent.front().first == id, "discovery retains the adopted connection identity");
+        check(r.radio.sent.front().second[0] == att::kReadByGroupReq && has(r.events.last("a", 1), "\"mtu\":23"),
+              "default-MTU policy survives outgoing, incoming and replacement connections");
       } else if (outcome == 3) {
         check(r.radio.sent.empty() && r.events.of("a", 1).empty(),
               "an abandoned request ignores late security completion");
@@ -1274,6 +1319,7 @@ void encryptedDiscoveryPreservesConnectionOwnership() {
 }
 
 int main() {
+  serverMtuLimitPreservesExistingNegotiation();
   encryptedDiscoveryPreservesConnectionOwnership();
   uint8_t mac[6] = {};
   check(posix::parseMac("01:23:45:67:89:aB", mac) && mac[0] == 1 && mac[5] == 0xab, "MAC network byte order");
@@ -1297,6 +1343,7 @@ int main() {
   types();
   advertising();
   clientAgainstServer();
+  clientAgainstServer(false);
   encryptedSubscriptions();
   persistentBonds();
   sharedScan();
@@ -1318,6 +1365,7 @@ int main() {
   idlePowerOff();
   hidReports();
   builtInGamepad();
+  xboxUsesDefaultMtu();
   gamepadWaitsForEncryption();
   gamepadReadsSelectedInputAfterSubscribing();
   gamepadRetriesConfigurationLikeTechnicHub();

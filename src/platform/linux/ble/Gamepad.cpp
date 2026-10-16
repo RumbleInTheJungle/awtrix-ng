@@ -131,7 +131,7 @@ void Gamepad::link(const Address& address, const std::string& name) {
   ignoredReports_ = 0;
   publish(GamepadStatus::Connecting);
   std::string args;
-  peer(JsonWriter(args).beginObject(), address).key("secure").value(true).endObject();
+  peer(JsonWriter(args).beginObject(), address).key("secure").value(true).key("exchangeMtu").value(!name.empty() && name.find("Xbox") == std::string::npos).endObject();
   connId_ = next();
   if (isFailure(call("connect", args, connId_))) lost("cannot connect");
 }

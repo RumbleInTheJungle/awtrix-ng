@@ -15,11 +15,13 @@ std::string BleHub::connect(const Key& key, const std::string& args) {
   Address peer;
   if (!parseAddress(args, peer)) return error("bad address");
   const bool secure = api::memberFlag(args, "secure");
+  const bool exchangeMtu = !api::present(api::memberValue(args, "exchangeMtu")) || api::memberFlag(args, "exchangeMtu");
   // One link per peer, whoever opened it: a watch that connects back to us by itself is read
   // over the link it made, as a second connection to it would be refused.
   for (auto& [id, link] : links_) {
     if (link.peer.b != peer.b) continue;
     link.secureDiscovery = link.secureDiscovery || secure;
+    if (!link.client) link.exchangeMtu = link.exchangeMtu && exchangeMtu;
     users_[key] = id;
     if (link.client && link.ready) {
       link.users.insert(key);
@@ -40,6 +42,7 @@ std::string BleHub::connect(const Key& key, const std::string& args) {
   link.peer = peer;
   link.outgoing = true;
   link.secureDiscovery = secure;
+  link.exchangeMtu = exchangeMtu;
   link.waiting.insert(key);
   users_[key] = id;
   return kOk;
@@ -62,6 +65,11 @@ void BleHub::onConnected(int id, bool ok, const std::string& why) {
 void BleHub::startClient(int id) {
   Link& link = links_[id];
   if (link.client || link.securingDiscovery) return;
+  if (!link.exchangeMtu && !server_.limitMtu(id, att::kDefaultMtu)) {
+    link.exchangeMtu = true;
+    if (log) log("ble: " + link.peer.str() + " preserving already negotiated ATT MTU on shared connection");
+  }
+  if (link.exchangeMtu) server_.limitMtu(id, att::kMaxMtu);
   link.ready = false;
   if (link.secureDiscovery && radio_.security(id) < 2) {
     link.securingDiscovery = true;
@@ -73,6 +81,7 @@ void BleHub::startClient(int id) {
     return;
   }
   if (link.secureDiscovery && log) log("ble: " + link.peer.str() + " encrypted; starting GATT discovery");
+  if (!link.exchangeMtu && log) log("ble: " + link.peer.str() + " ATT MTU 23; no local MTU exchange (Technic Hub profile)");
   link.client = std::make_unique<GattClient>([this, id](const Bytes& pdu) { return radio_.send(id, pdu); });
   link.client->onReady = [this, id](bool ready) {
     auto l = links_.find(id);
@@ -85,6 +94,8 @@ void BleHub::startClient(int id) {
       return;
     }
     l->second.ready = true;
+    if (log) log("ble: " + l->second.peer.str() + " GATT discovery complete; ATT MTU " +
+                 std::to_string(l->second.client->mtu()));
     const std::set<Key> waiting = std::move(l->second.waiting);
     l->second.waiting.clear();
     for (const Key& k : waiting) {
@@ -113,7 +124,7 @@ void BleHub::startClient(int id) {
       if (sub != subscriptions_.end()) deliver(k, sub->second, out);
     }
   };
-  link.client->start(now_);
+  link.client->start(now_, link.exchangeMtu);
 }
 
 // After turning a connect down the kernel goes on connecting to that peer by itself, and the link
@@ -130,6 +141,7 @@ void BleHub::onAccepted(int id, const Address& peer) {
     radio_.disconnect(pending);
     link.outgoing = true;
     link.secureDiscovery = links_[pending].secureDiscovery;
+    link.exchangeMtu = links_[pending].exchangeMtu;
     link.waiting = std::move(links_[pending].waiting);
     links_.erase(pending);
     for (const Key& k : link.waiting) users_[k] = id;

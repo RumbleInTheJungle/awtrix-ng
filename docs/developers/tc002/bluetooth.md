@@ -75,6 +75,13 @@ key size and store hint. Its type distinguishes legacy pairing from LE Secure Co
 bytes, diversifier or random-number fields are logged. Re-encryption with an existing bond need
 not generate this event, so absence of the message does not identify the pairing method.
 
+For the Technic Hub comparison, new gamepad clients whose advertised name contains `Xbox` or is absent pass the internal `exchangeMtu: false`
+connection option. They start service discovery without sending an Exchange MTU request and
+use the default ATT MTU of 23 bytes. The local server caps a peer-initiated exchange at 23 on
+that link. Long Report Maps are still read completely through Read Blob requests. Other gamepads and ordinary BLE
+clients retain MTU exchange, and an already negotiated larger MTU on a shared link is preserved
+and logged rather than lowered in place. This comparison does not change the pairing method.
+
 The gamepad log distinguishes security, report-map and subscription failures, and names the
 last phase when the 60-second pairing window expires. Report-map messages describe the expected
 input report id and payload length, not received input. Up to three malformed or wrong-length
