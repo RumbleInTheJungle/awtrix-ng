@@ -184,6 +184,15 @@ void BleHub::readInitialReport(int id, uint16_t handle) {
   for (const auto& service : l->second.client->services()) {
     for (const auto& c : service.characteristics) {
       if (c.value != handle) continue;
+      Bytes expectedConfig;
+      put16(expectedConfig, (c.props & att::kPropNotify) ? 1 : 2);
+      const uint16_t config = c.clientConfig;
+      l->second.client->read(config, [this, id, config, expectedConfig](bool ok, uint8_t code, const Bytes& value) {
+        if (log) log("ble: link " + std::to_string(id) + " notification config readback handle " +
+                     std::to_string(config) + (ok ? ": " + toHex(value) + ", expected " + toHex(expectedConfig) +
+                     (value == expectedConfig ? " (match)" : " (mismatch)") :
+                     ": failed (ATT " + std::to_string(code) + ")"));
+      });
       if (!(c.props & att::kPropRead)) {
         if (log) log("ble: link " + std::to_string(id) + " initial input read skipped: handle " +
                      std::to_string(handle) + " is not readable");

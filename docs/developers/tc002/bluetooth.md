@@ -81,6 +81,12 @@ subscriptions keep their existing behavior. Read results and ATT errors are logg
 alone does not make a gamepad Ready: live input still requires a valid notification. The first
 three notifications or indications on each connection log their handle, length and subscriber
 count, including values with no matching subscription. Their payloads are not logged.
+The same gamepad initialization reads back the notification configuration descriptor and logs
+its value, the expected value and whether they match. A read error is logged without deliberately
+ending the subscription. The Linux socket backend independently logs its first three ATT
+notifications or indications per connection before handing them to the hub, with the value handle
+and payload length. This distinguishes socket reception from hub routing without logging input
+payloads.
 
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
 events go through one queue in the manager, so reports from the two gamepads are handled in

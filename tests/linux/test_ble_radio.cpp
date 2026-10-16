@@ -19,6 +19,7 @@
 #include <vector>
 
 #include "platform/linux/ble/BleService.h"
+#include "platform/linux/ble/Att.h"
 #include "platform/linux/ble/LinuxBleRadio.h"
 
 using awtrix::ble::Address;
@@ -254,6 +255,34 @@ struct Fixture {
     dispatch(sockets.scanner, POLLIN);
   }
 };
+
+void socketNotificationDiagnosticsAreBounded() {
+  Fixture fixture;
+  const int fd = fixture.accept();
+  std::vector<Bytes> received;
+  BleRadio::Events events;
+  events.att = [&](int, const uint8_t* p, std::size_t n) { received.emplace_back(p, p + n); };
+  fixture.radio->setEvents(std::move(events));
+  const std::vector<Bytes> packets = {
+    {awtrix::ble::att::kReadRsp, 0},
+    {awtrix::ble::att::kNotify, 30, 0, 1, 2},
+    {awtrix::ble::att::kIndicate, 32, 0, 3},
+    {awtrix::ble::att::kNotify},
+    {awtrix::ble::att::kNotify, 30, 0, 4}
+  };
+  for (const auto& packet : packets) {
+    fixture.sockets.sendTo(fd, packet);
+    fixture.dispatch(fd, POLLIN);
+  }
+  check(received == packets, "socket diagnostics preserve every ATT packet including malformed input");
+  const auto count = std::count_if(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("ATT socket received") != std::string::npos;
+  });
+  check(count == 3, "only the first three notifications or indications are logged at the socket");
+  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("notification handle 30, 2 bytes") != std::string::npos;
+  }), "socket diagnostic identifies the value handle and payload length");
+}
 
 void secureConnectionsConfiguration() {
   for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
@@ -956,6 +985,7 @@ extern "C" int __wrap_uname(utsname* information) {
 }
 
 int main() {
+  socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();
   outgoingConnectionsAreQueued();
   cancelledQueuedConnectionDoesNotTouchTheActiveOne();

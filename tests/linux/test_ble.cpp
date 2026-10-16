@@ -864,6 +864,9 @@ void gamepadReadsSelectedInputAfterSubscribing() {
     }
   }
   check(reads == 1, "readable selected input is read once without waiting for button movement");
+  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
+    return has(line, "notification config readback handle") && has(line, "0100, expected 0100 (match)");
+  }), "notification configuration is read back and checked against the written value");
   check(r.status() == GamepadStatus::Connecting, "a readable snapshot alone does not mark live input ready");
   check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
     return has(line, "bytes; waiting for notifications");

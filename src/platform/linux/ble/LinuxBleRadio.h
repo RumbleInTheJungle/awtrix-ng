@@ -81,6 +81,7 @@ class LinuxBleRadio : public BleRadio {
     std::deque<Bytes> out;
     int secureTarget = 0;
     int64_t secureDeadline = -1;
+    unsigned loggedNotifications = 0;
   };
   // A raw initiation being undone: cancelled while pending, or disconnected once the controller
   // made the link. Until it ends no other connection starts, and the ATT socket it may still

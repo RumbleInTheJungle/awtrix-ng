@@ -8,6 +8,7 @@
 #include <unistd.h>
 
 #include "platform/linux/ble/LinuxBleProtocol.h"
+#include "platform/linux/ble/Att.h"
 
 namespace awtrix::ble {
 using namespace linux_detail;
@@ -246,6 +247,13 @@ void LinuxBleRadio::readLink(int id, Link& link) {
   for (;;) {
     const ssize_t n = ::recv(link.fd, buf, sizeof buf, MSG_DONTWAIT);
     if (n > 0) {
+      if ((buf[0] == att::kNotify || buf[0] == att::kIndicate) && link.loggedNotifications < 3) {
+        ++link.loggedNotifications;
+        note("ble: link " + std::to_string(id) + " ATT socket received " +
+             (buf[0] == att::kNotify ? "notification" : "indication") +
+             (n >= 3 ? " handle " + std::to_string(le16(buf + 1)) + ", " + std::to_string(n - 3) + " bytes" :
+                       " with truncated header"));
+      }
       if (events_.att) events_.att(id, buf, static_cast<std::size_t>(n));
       if (!links_.count(id)) return;
       continue;
