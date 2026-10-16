@@ -141,6 +141,8 @@ std::string BleHub::subscribe(const Key& key, const std::string& args) {
       auto s = subscriptions_.find(key);
       auto l = links_.find(id);
       if (s == subscriptions_.end() || l == links_.end() || !l->second.client) return;
+      if (log) log("ble: " + l->second.peer.str() + " report reference at value handle " + std::to_string(value) +
+                   (ok ? ": " + toHex(content) + ", wanted " + toHex(descValue) : ": read failed"));
       if (ok && content == descValue) {
         for (const auto& svc : l->second.client->services())
           for (const GattClient::Characteristic& c : svc.characteristics)
@@ -204,6 +206,9 @@ void BleHub::enableNotifications(int id, uint16_t config, uint16_t handle, uint1
   Bytes on;
   put16(on, value);
   l->second.client->write(config, on, true, [this, id, config, handle, value, retried](bool ok, uint8_t code, const Bytes&) {
+    if (log) log("ble: link " + std::to_string(id) + " notifications value handle " + std::to_string(handle) +
+                 ", config handle " + std::to_string(config) + (retried ? ", retry: " : ": ") +
+                 (ok ? "enabled" : "failed (ATT " + std::to_string(code) + ")"));
     if (ok) return;
     const bool needsPairing = code == att::kInsufficientAuthentication || code == att::kInsufficientEncryption;
     auto link = links_.find(id);

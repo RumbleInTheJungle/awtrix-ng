@@ -842,6 +842,47 @@ struct PadRig {
   }
 };
 
+void gamepadWaitsForEncryption() {
+  PadRig r;
+  r.radio.deferSecurity = true;
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  const int link = r.linkOf("68:6C:E6:7A:21:A5");
+  const auto readMap = [&] {
+    return std::any_of(r.radio.sent.begin(), r.radio.sent.end(), [&](const auto& packet) {
+      return packet.second.size() == 3 && packet.second[0] == att::kReadReq &&
+             le16(packet.second.data() + 1) == r.handles[0];
+    });
+  };
+  check(link >= 0 && r.status() == GamepadStatus::Connecting, "Xbox waits for encryption");
+  check(!readMap(), "HID report map is not read before security completes");
+  r.radio.levels[link] = 2;
+  r.radio.events.secured(link, true, "");
+  r.step();
+  check(readMap(), "HID report map is read after security completes");
+  r.report(1);
+  check(r.status() == GamepadStatus::Ready && r.buttons() == 1, "encrypted gamepad reaches ready on input");
+}
+
+void gamepadSecurityFailure() {
+  PadRig r;
+  r.radio.deferSecurity = true;
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.radio.events.secured(r.linkOf("68:6C:E6:7A:21:A5"), false, "pairing failed (status 5)");
+  r.step();
+  check(r.status() == GamepadStatus::Pairing, "failed security returns to pairing for a retry");
+  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
+    return has(line, "security: pairing failed (status 5)");
+  }), "security failure names its phase and preserves the reason");
+  std::string stored;
+  check(!posix::readText(r.path, stored), "failed security never remembers the gamepad");
+}
+
 void builtInGamepad() {
   PadRig r;
   r.pad->start(r.now);
@@ -1121,6 +1162,8 @@ int main() {
   idlePowerOff();
   hidReports();
   builtInGamepad();
+  gamepadWaitsForEncryption();
+  gamepadSecurityFailure();
   pairingEnds();
   retriesSlowDown();
   if (failures) std::printf("%d failure(s)\n", failures);

@@ -303,7 +303,13 @@ bool LinuxBleRadio::secure(int id, int level) {
   auto it = links_.find(id);
   if (it == links_.end() || !it->second.open) return false;
   BtSecurity s{static_cast<uint8_t>(level), 0};
-  if (::setsockopt(it->second.fd, kSolBluetooth, kBtSecurity, &s, sizeof s) < 0) return false;
+  if (::setsockopt(it->second.fd, kSolBluetooth, kBtSecurity, &s, sizeof s) < 0) {
+    const int error = errno;
+    note("ble: " + it->second.peer.str() + " security request failed: " + std::strerror(error) +
+         " (errno " + std::to_string(error) + ")");
+    return false;
+  }
+  note("ble: " + it->second.peer.str() + " requesting security level " + std::to_string(level));
   it->second.secureTarget = level;
   it->second.secureDeadline = now_ + options_.secureTimeoutMs;
   return true;

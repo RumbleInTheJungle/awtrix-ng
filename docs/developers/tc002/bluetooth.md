@@ -61,6 +61,19 @@ the kernel guards without changing controller connection limits or the AON block
 
 ## Two-controller gamepad registry
 
+Gamepad sessions request encryption through the hub's `pair` operation after GATT discovery
+and wait for its result before reading the HID Report Map. This also applies when a session
+reuses an incoming ATT connection. The Linux radio enables LE Secure Connections before power-on,
+without requiring Secure Connections from older peers; a rejected management command is logged
+and does not prevent Bluetooth startup.
+
+The gamepad log distinguishes security, report-map and subscription failures, and names the
+last phase when the 60-second pairing window expires. Report-map messages describe the expected
+input report id and payload length, not received input. Up to three malformed or wrong-length
+input reports are logged per connection. BLE logs include the Report Reference descriptor values,
+notification configuration results, security requests and their completion or timeout. No pairing
+keys or input payloads are logged.
+
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
 events go through one queue in the manager, so reports from the two gamepads are handled in
 arrival order. A session reports through callbacks: a status change, a change of its remembered

@@ -90,6 +90,8 @@ struct SocketController {
   std::deque<Incoming> incoming;
   std::vector<Bytes> commands;
   std::vector<Bytes> rawCommands;
+  std::vector<Bytes> managementCommands;
+  uint8_t secureConnectionsStatus = 0;
   std::vector<std::pair<int, int>> securityRequests;
   std::string kernelRelease = "4.9.84";
   bool controllerAttached = true;
@@ -125,6 +127,7 @@ struct SocketController {
 
   void answerManagement(int fd, const uint8_t* data) {
     const uint16_t op = word(data);
+    managementCommands.emplace_back(data, data + 6 + word(data + 4));
     Bytes result;
     if (op == 0x0003) result = controllerAttached ? Bytes{1, 0, 0, 0} : Bytes{0, 0};
     else if (op == 0x0004) result = {1, 0, 0, 0, 0, 2};
@@ -134,7 +137,7 @@ struct SocketController {
     appendWord(reply, word(data + 2));
     appendWord(reply, static_cast<uint16_t>(3 + result.size()));
     appendWord(reply, op);
-    reply.push_back(0);
+    reply.push_back(op == 0x002d ? secureConnectionsStatus : 0);
     reply.insert(reply.end(), result.begin(), result.end());
     sendTo(fd, reply);
   }
@@ -182,9 +185,10 @@ struct Fixture {
   bool powered = false;
   int64_t now = 100;
 
-  explicit Fixture(int attempts = 3, std::string release = "4.9.84") {
+  explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0) {
     controller = &sockets;
     sockets.kernelRelease = std::move(release);
+    sockets.secureConnectionsStatus = scStatus;
     LinuxBleRadio::Options options;
     options.connectAttempts = attempts;
     options.log = [this](const std::string& line) { logs.push_back(line); };
@@ -250,6 +254,27 @@ struct Fixture {
     dispatch(sockets.scanner, POLLIN);
   }
 };
+
+void secureConnectionsConfiguration() {
+  for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
+    Fixture fixture(3, "4.9.84", status);
+    const auto& commands = fixture.sockets.managementCommands;
+    auto secure = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x002d;
+    });
+    auto power = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x0005;
+    });
+    check(secure != commands.end() && power != commands.end() && secure < power &&
+              secure->size() == 7 && (*secure)[6] == 1,
+          "Secure Connections is enabled before power, without requiring SC-only mode");
+    const std::string expected = status == 0 ? "LE Secure Connections enabled" :
+                                             "LE Secure Connections unavailable (status 12)";
+    check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+      return line.find(expected) != std::string::npos;
+    }), "Secure Connections result is visible, and unsupported controllers still power on");
+  }
+}
 
 void incomingRestoresScan() {
   Fixture fixture;
@@ -931,6 +956,7 @@ extern "C" int __wrap_uname(utsname* information) {
 }
 
 int main() {
+  secureConnectionsConfiguration();
   outgoingConnectionsAreQueued();
   cancelledQueuedConnectionDoesNotTouchTheActiveOne();
   newConnectionsCannotOvertakeTheQueue();

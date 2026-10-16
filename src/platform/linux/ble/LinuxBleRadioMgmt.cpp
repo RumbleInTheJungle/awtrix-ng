@@ -69,6 +69,7 @@ void LinuxBleRadio::mgmtEvent(const uint8_t* p, std::size_t n) {
     case kAuthFailed:
       if (len >= 8) {
         const Address who = fromWire(d, d[6]);
+        note("ble: " + who.str() + " authentication failed (status " + std::to_string(d[7]) + ")");
         for (auto& [id, link] : links_) {
           if (link.peer.b != who.b || !link.secureTarget) continue;
           link.secureTarget = 0;
@@ -125,6 +126,10 @@ void LinuxBleRadio::configure() {
   slots_ = mgmt(kReadAdvFeatures, {}, &features) == 0 && features.size() >= 7 ? features[6] : 0;
   mgmt(kSetIoCapability, {0x03});
   mgmt(kSetBondable, {0x01});
+  // Enable Secure Connections while allowing legacy pairing for older BLE devices.
+  const int sc = mgmt(kSetSecureConnections, {0x01});
+  note(sc == 0 ? "ble: LE Secure Connections enabled" :
+       "ble: LE Secure Connections unavailable (status " + std::to_string(sc) + ")");
   mgmt(kSetConnectable, {0x01});
   Bytes irks;
   put16(irks, static_cast<uint16_t>(bonds_.irks().size()));
