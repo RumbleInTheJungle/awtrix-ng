@@ -929,6 +929,7 @@ void gamepadWaitsForEncryption() {
   };
   check(link >= 0 && r.status() == GamepadStatus::Connecting, "Xbox waits for encryption");
   check(!readMap(), "HID report map is not read before security completes");
+  check(r.radio.sent.empty(), "gamepad sends no ATT discovery requests before encryption");
   r.radio.levels[link] = 2;
   r.radio.events.secured(link, true, "");
   r.step();
@@ -948,7 +949,7 @@ void gamepadSecurityFailure() {
   r.step();
   check(r.status() == GamepadStatus::Pairing, "failed security returns to pairing for a retry");
   check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
-    return has(line, "security: pairing failed (status 5)");
+    return has(line, "connect/security/discovery: pairing failed (status 5)");
   }), "security failure names its phase and preserves the reason");
   std::string stored;
   check(!posix::readText(r.path, stored), "failed security never remembers the gamepad");
@@ -1189,7 +1190,56 @@ void pairingIsBoundedAndIdempotent() {
         "pairing timeout preserves the first controller");
 }
 
+void encryptedDiscoveryPreservesConnectionOwnership() {
+  for (int mode = 0; mode < 3; ++mode) {
+    for (int outcome = 0; outcome < 4; ++outcome) {
+      Rig r;
+      r.radio.deferSecurity = true;
+      r.call("a", "scan", "{}", 9);
+      const Address peer = mkaddr("02:00:00:00:00:23");
+      const auto accept = [&] {
+        r.radio.peers[7] = peer;
+        r.radio.levels[7] = 1;
+        r.radio.peerDb.linkUp(7);
+        r.radio.events.accepted(7, peer);
+      };
+      if (mode == 1) accept();
+      r.hub.call("a", "connect", R"({"addr":"02:00:00:00:00:23","secure":true})", 1, r.now);
+      if (mode == 2) accept();
+      r.settle();
+      const int id = mode == 0 ? 100 : 7;
+      check(r.radio.sent.empty() && r.events.of("a", 1).empty(),
+            "outgoing, reused and replacement links wait for security before ATT discovery");
+      if (outcome >= 2) {
+        if (outcome == 2) r.radio.events.disconnected(id);
+        else r.hub.forget("a", r.now);
+        r.radio.levels[id] = 2;
+        r.radio.events.secured(id, true, "");
+      } else {
+        if (outcome == 0) r.radio.levels[id] = 2;
+        r.radio.events.secured(id, outcome == 0, outcome == 0 ? "" : "security rejected");
+      }
+      r.settle();
+      if (outcome == 0) {
+        check(!r.radio.sent.empty() && has(r.events.last("a", 1), "\"connected\":true"),
+              "confirmed security starts discovery on the correct physical link");
+        check(r.radio.sent.front().first == id, "discovery retains the adopted connection identity");
+      } else if (outcome == 3) {
+        check(r.radio.sent.empty() && r.events.of("a", 1).empty(),
+              "an abandoned request ignores late security completion");
+        if (mode == 1)
+          check(std::count(r.radio.disconnected.begin(), r.radio.disconnected.end(), 7) == 0,
+                "cancelling discovery leaves the borrowed incoming connection open");
+      } else {
+        check(r.radio.sent.empty() && has(r.events.last("a", 1), "\"error\""),
+              "failed security or a disconnect never starts ATT discovery");
+      }
+    }
+  }
+}
+
 int main() {
+  encryptedDiscoveryPreservesConnectionOwnership();
   uint8_t mac[6] = {};
   check(posix::parseMac("01:23:45:67:89:aB", mac) && mac[0] == 1 && mac[5] == 0xab, "MAC network byte order");
   check(posix::parseMac("01:23:45:67:89:aB", mac, true) && mac[0] == 0xab && mac[5] == 1, "MAC controller byte order");

@@ -66,6 +66,8 @@ class BleHub {
     Address peer;
     bool outgoing = false;
     bool ready = false;
+    bool secureDiscovery = false;
+    bool securingDiscovery = false;
     std::unique_ptr<GattClient> client;
     std::set<Key> waiting;
     std::set<Key> users;

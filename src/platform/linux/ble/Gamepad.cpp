@@ -127,11 +127,11 @@ void Gamepad::watch() {
 void Gamepad::link(const Address& address, const std::string& name) {
   stopAll();
   linking_ = {address, name};
-  phase_ = "connect/discovery";
+  phase_ = "connect/security/discovery";
   ignoredReports_ = 0;
   publish(GamepadStatus::Connecting);
   std::string args;
-  peer(JsonWriter(args).beginObject(), address).endObject();
+  peer(JsonWriter(args).beginObject(), address).key("secure").value(true).endObject();
   connId_ = next();
   if (isFailure(call("connect", args, connId_))) lost("cannot connect");
 }
@@ -169,7 +169,7 @@ void Gamepad::handle(const BleEvent& e, int64_t nowMs) {
     if (!api::memberFlag(e.json, "connected")) return;
     // Pair before reading HID attributes, as Xbox controllers require an encrypted session.
     phase_ = "security";
-    if (log_) log_("gamepad: " + linking_.address.str() + " connected; requesting encryption");
+    if (log_) log_("gamepad: " + linking_.address.str() + " GATT discovery complete; checking encryption");
     std::string args;
     JsonWriter(args).beginObject().key("conn").value(static_cast<long long>(connId_)).endObject();
     pairId_ = next();

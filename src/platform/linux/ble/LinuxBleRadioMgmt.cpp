@@ -47,8 +47,17 @@ void LinuxBleRadio::mgmtEvent(const uint8_t* p, std::size_t n) {
       if (state_ != State::Off && index == index_) fail("the Bluetooth controller went away");
       break;
     case kNewLtk:
-      if (len >= 1 + BondStore::kLtkInfo && d[0])
-        bonds_.rememberLtk(Bytes(d + 1, d + 1 + BondStore::kLtkInfo));
+      if (index == index_ && len >= 1 + BondStore::kLtkInfo) {
+        static const char* const kTypes[] = {
+          "legacy (unauthenticated)", "legacy (authenticated)",
+          "LE Secure Connections (unauthenticated)", "LE Secure Connections (authenticated)",
+          "LE Secure Connections (debug)"
+        };
+        const std::string type = d[8] < 5 ? kTypes[d[8]] : "unknown type " + std::to_string(d[8]);
+        note("ble: " + fromWire(d + 1, d[7]).str() + " pairing completed: " + type +
+             ", key size " + std::to_string(d[10]) + " bytes, store hint " + std::to_string(d[0]));
+        if (d[0]) bonds_.rememberLtk(Bytes(d + 1, d + 1 + BondStore::kLtkInfo));
+      }
       break;
     case kNewIrk:
       if (len >= 1 + 6 + BondStore::kIrkInfo && d[0])

@@ -261,6 +261,35 @@ struct Fixture {
   }
 };
 
+void pairingMethodMetadataContainsNoKeyMaterial() {
+  Fixture fixture;
+  int management = -1;
+  for (const auto& [fd, endpoint] : fixture.sockets.endpoints)
+    if (endpoint.kind == Kind::Management) management = fd;
+  check(management >= 0, "pairing metadata test has a management socket");
+  for (const auto type : {uint8_t{0}, uint8_t{2}, uint8_t{255}}) {
+    Bytes event;
+    appendWord(event, 0x000a);
+    appendWord(event, 0);
+    appendWord(event, 37);
+    Bytes parameters(37, 0xa5);
+    parameters[0] = 0;
+    parameters[7] = 1;
+    parameters[8] = type;
+    parameters[10] = 16;
+    event.insert(event.end(), parameters.begin(), parameters.end());
+    fixture.sockets.sendTo(management, event);
+    fixture.dispatch(management, POLLIN);
+    const auto& line = fixture.logs.back();
+    const std::string expected = type == 0 ? "legacy (unauthenticated)" :
+                                 type == 2 ? "LE Secure Connections (unauthenticated)" : "unknown type 255";
+    check(line.find(expected) != std::string::npos && line.find("key size 16 bytes") != std::string::npos,
+          "new pairing metadata distinguishes legacy, Secure Connections and unknown key types");
+    check(line.find("a5a5") == std::string::npos && line.find("A5A5") == std::string::npos,
+          "pairing diagnostics do not expose key bytes");
+  }
+}
+
 void hciMonitorReceivesOnlyIncomingAttMetadata() {
   Fixture fixture(3, "4.9.84", 0, true);
   check(fixture.sockets.monitor >= 0 && fixture.sockets.monitor != fixture.sockets.scanner,
@@ -1049,6 +1078,7 @@ extern "C" int __wrap_uname(utsname* information) {
 }
 
 int main() {
+  pairingMethodMetadataContainsNoKeyMaterial();
   hciMonitorReceivesOnlyIncomingAttMetadata();
   unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();

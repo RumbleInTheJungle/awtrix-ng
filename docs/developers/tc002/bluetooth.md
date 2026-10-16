@@ -61,11 +61,19 @@ the kernel guards without changing controller connection limits or the AON block
 
 ## Two-controller gamepad registry
 
-Gamepad sessions request encryption through the hub's `pair` operation after GATT discovery
-and wait for its result before reading the HID Report Map. This also applies when a session
-reuses an incoming ATT connection. The Linux radio enables LE Secure Connections before power-on,
+Gamepad sessions connect with `secure: true`. Before starting GATT discovery, the hub waits for
+confirmed encryption, including on an incoming ATT connection or one replacing a pending outgoing
+connection. A security failure, disconnect or cancellation ends that attempt without starting
+discovery, including when a security result arrives late. A
+previously discovered shared client is reused; the session also checks encryption through `pair`
+before reading the HID Report Map. The Linux radio enables LE Secure Connections before power-on,
 without requiring Secure Connections from older peers; a rejected management command is logged
 and does not prevent Bluetooth startup.
+
+For a fresh pairing, the management New Long Term Key event logs the peer, key type, encryption
+key size and store hint. Its type distinguishes legacy pairing from LE Secure Connections. No key
+bytes, diversifier or random-number fields are logged. Re-encryption with an existing bond need
+not generate this event, so absence of the message does not identify the pairing method.
 
 The gamepad log distinguishes security, report-map and subscription failures, and names the
 last phase when the 60-second pairing window expires. Report-map messages describe the expected
