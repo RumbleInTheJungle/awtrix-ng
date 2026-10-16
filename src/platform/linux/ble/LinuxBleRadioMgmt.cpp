@@ -149,6 +149,7 @@ void LinuxBleRadio::configure() {
     return;
   }
   state_ = State::On;
+  if (options_.monitorInput) openMonitor();
   note("ble: controller on as " + address_.str() + ", " + std::to_string(slots_) + " advert slots, " +
        std::to_string(bonds_.ltks().size()) + " bonds");
   if (events_.power) events_.power(Power::On, "");
@@ -164,6 +165,7 @@ void LinuxBleRadio::shutdown() {
   if (scanFd_ >= 0) ::close(scanFd_);
   if (listenFd_ >= 0) ::close(listenFd_);
   scanFd_ = listenFd_ = -1;
+  closeMonitor();
   const bool wasUp = state_ != State::Off;
   if (state_ == State::On) mgmt(kSetPowered, {0x00});
   state_ = State::Off;

@@ -198,15 +198,40 @@ void BleHub::readInitialReport(int id, uint16_t handle) {
                      std::to_string(handle) + " is not readable");
         return;
       }
-      if (log) log("ble: link " + std::to_string(id) + " reading initial input at handle " + std::to_string(handle));
-      l->second.client->read(handle, [this, id, handle](bool ok, uint8_t code, const Bytes& value) {
-        if (log) log("ble: link " + std::to_string(id) + " initial input handle " + std::to_string(handle) +
-                     (ok ? ": " + std::to_string(value.size()) + " bytes; waiting for notifications" :
-                           ": read failed (ATT " + std::to_string(code) + ")"));
-      });
+      if (!l->second.liveInputs.count(handle)) {
+        l->second.inputProbes.emplace(handle, InputProbe{});
+        sampleInputReport(id, handle);
+      }
       return;
     }
   }
+}
+
+// Six samples, three seconds apart, compare input privately while notifications are absent.
+void BleHub::sampleInputReport(int id, uint16_t handle) {
+  auto l = links_.find(id);
+  if (l == links_.end() || !l->second.client || l->second.client->broken()) return;
+  auto probe = l->second.inputProbes.find(handle);
+  if (probe == l->second.inputProbes.end() || probe->second.pending) return;
+  probe->second.pending = true;
+  const unsigned sample = ++probe->second.samples;
+  l->second.client->read(handle, [this, id, handle, sample](bool ok, uint8_t code, const Bytes& value) {
+    auto l = links_.find(id);
+    if (l == links_.end()) return;
+    auto probe = l->second.inputProbes.find(handle);
+    if (probe == l->second.inputProbes.end()) return;
+    const char* changed = sample == 1 ? "baseline" : value == probe->second.previous ? "unchanged" : "changed";
+    if (log) log("ble: link " + std::to_string(id) + " input sample handle " + std::to_string(handle) +
+                 (ok ? ": " + std::to_string(value.size()) + " bytes; waiting for notifications; sample " +
+                       std::to_string(sample) + "/6 " + changed : ": failed (ATT " + std::to_string(code) + ")"));
+    if (!ok || sample >= 6) {
+      l->second.inputProbes.erase(probe);
+      return;
+    }
+    probe->second.previous = value;
+    probe->second.pending = false;
+    probe->second.nextAt = now_ + 3000;
+  });
 }
 
 // Reads a value, pairing first when the peer keeps it for paired centrals.
@@ -281,6 +306,8 @@ void BleHub::failSubscription(int id, uint16_t handle, uint8_t code) {
   l->second.subscribers.erase(s);
   l->second.notificationsEnabled.erase(handle);
   l->second.initialReads.erase(handle);
+  l->second.inputProbes.erase(handle);
+  l->second.liveInputs.erase(handle);
   for (const Key& k : keys) {
     auto mine = subscriptions_.find(k);
     if (mine == subscriptions_.end()) continue;
@@ -308,6 +335,8 @@ void BleHub::releaseSubscription(Key key, bool tellScript) {
     l->second.subscribers.erase(s);
     l->second.notificationsEnabled.erase(handle);
     l->second.initialReads.erase(handle);
+    l->second.inputProbes.erase(handle);
+    l->second.liveInputs.erase(handle);
     if (!l->second.client) continue;
     for (const GattClient::Service& svc : l->second.client->services())
       for (const GattClient::Characteristic& c : svc.characteristics)

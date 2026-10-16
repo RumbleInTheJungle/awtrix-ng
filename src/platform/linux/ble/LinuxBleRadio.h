@@ -32,6 +32,7 @@ class LinuxBleRadio : public BleRadio {
     int connectAttempts = 3;
     int64_t retryDelayMs = 1000;
     int64_t secureTimeoutMs = 30000;
+    bool monitorInput = false;
     std::function<void(const std::string&)> log;
   };
 
@@ -105,6 +106,10 @@ class LinuxBleRadio : public BleRadio {
   void fail(const std::string& why);
   void shutdown();
   bool openScanner();
+  void openMonitor();
+  void readMonitor();
+  void closeMonitor();
+  void summarizeMonitor(uint16_t handle);
   void readScanner();
   bool hciCommand(uint16_t op, const Bytes& params);
   void hciEvent(const uint8_t* p, std::size_t n);
@@ -135,6 +140,13 @@ class LinuxBleRadio : public BleRadio {
   State state_ = State::Off;
   int scanFd_ = -1;
   int listenFd_ = -1;
+  int monitorFd_ = -1;
+  struct MonitorStats {
+    unsigned acl = 0, att = 0, continuations = 0, notifications = 0;
+    unsigned loggedAtt = 0, loggedNotifications = 0;
+  };
+  std::map<uint16_t, MonitorStats> monitorStats_;
+  unsigned monitorDropped_ = 0;
   uint16_t index_ = 0;
   Address address_;
   std::string name_ = "AWTRIX";

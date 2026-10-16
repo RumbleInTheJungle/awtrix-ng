@@ -56,6 +56,12 @@ class BleHub {
  private:
   using Key = ResourceKey;
   enum Resource { kLinks, kSubscriptions, kAdverts, kServices };
+  struct InputProbe {
+    unsigned samples = 0;
+    int64_t nextAt = 0;
+    bool pending = false;
+    Bytes previous;
+  };
   struct Link {
     Address peer;
     bool outgoing = false;
@@ -67,6 +73,8 @@ class BleHub {
     std::set<uint16_t> notificationsEnabled;
     std::set<uint16_t> initialReads;
     unsigned loggedValues = 0;
+    std::map<uint16_t, InputProbe> inputProbes;
+    std::set<uint16_t> liveInputs;
     std::vector<Key> pairing;
     std::vector<std::function<void(bool)>> afterSecure;
   };
@@ -108,6 +116,7 @@ class BleHub {
   void enableNotifications(int link, uint16_t config, uint16_t handle, uint16_t value, bool retried);
   void addToSubscription(const Key& key, int link, const GattClient::Characteristic& c);
   void readInitialReport(int link, uint16_t handle);
+  void sampleInputReport(int link, uint16_t handle);
   void readSecured(int link, uint16_t handle, bool retried, std::function<void(bool ok, const Bytes& value)> done);
   void failSubscription(int link, uint16_t handle, uint8_t code);
   void deliver(const Key& key, Subscription& sub, const std::string& json);

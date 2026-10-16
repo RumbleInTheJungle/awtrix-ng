@@ -89,6 +89,9 @@ void BleHub::startClient(int id) {
                    std::to_string(s == l->second.subscribers.end() ? 0 : s->second.size()) + " subscriber(s)");
     }
     if (s == l->second.subscribers.end()) return;
+    l->second.liveInputs.insert(handle);
+    if (l->second.inputProbes.erase(handle) && log)
+      log("ble: link " + std::to_string(id) + " input sampling stopped: live value received at handle " + std::to_string(handle));
     std::string out;
     api::JsonWriter(out).beginObject().key("data").value(toHex(value)).endObject();
     for (const Key& k : s->second) {

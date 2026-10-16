@@ -873,6 +873,44 @@ void gamepadReadsSelectedInputAfterSubscribing() {
   }), "initial input read result is logged");
   r.report(1);
   check(r.status() == GamepadStatus::Ready && r.buttons() == 1, "notification after initial read establishes live input");
+  const auto sent = r.radio.sent.size();
+  r.now += 9000;
+  r.hub.tick(r.now);
+  r.step();
+  check(r.radio.sent.size() == sent, "live input cancels further diagnostic reads");
+}
+
+void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
+  PadRig r(true);
+  r.pad->start(r.now);
+  r.pad->pair(r.now);
+  r.step();
+  r.advert("68:6C:E6:7A:21:A5", "Xbox Wireless Controller");
+  r.now += 2999;
+  r.hub.tick(r.now);
+  r.step();
+  const auto samples = [&] {
+    return std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [&](const auto& packet) {
+      return packet.second.size() == 3 && packet.second[0] == att::kReadReq &&
+             le16(packet.second.data() + 1) == r.handles[1];
+    });
+  };
+  check(samples() == 1, "input sampling waits three seconds between reads");
+  r.radio.peerDb.setValue(r.handles[1], eightBitDoReport(15, 1));
+  for (int i = 0; i < 10; ++i) {
+    r.now += 3000;
+    r.hub.tick(r.now);
+    r.step();
+  }
+  check(samples() == 6, "input sampling stops after six reads");
+  check(r.status() == GamepadStatus::Connecting && r.buttons() == 0,
+        "diagnostic snapshots never mark the gamepad ready or publish controls");
+  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
+    return has(line, "sample 2/6 changed");
+  }), "sample changes are logged without input payloads");
+  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
+    return has(line, "sample 3/6 unchanged");
+  }), "unchanged samples are distinguished from changes");
 }
 
 void gamepadWaitsForEncryption() {
@@ -1197,6 +1235,7 @@ int main() {
   builtInGamepad();
   gamepadWaitsForEncryption();
   gamepadReadsSelectedInputAfterSubscribing();
+  gamepadSamplingIsBoundedAndDoesNotPublishControls();
   gamepadSecurityFailure();
   pairingEnds();
   retriesSlowDown();

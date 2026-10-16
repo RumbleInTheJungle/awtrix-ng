@@ -74,7 +74,7 @@ void appendWord(Bytes& out, uint16_t n) {
   out.push_back(static_cast<uint8_t>(n >> 8));
 }
 
-enum class Kind { Unbound, Management, Scanner, Listener, Link };
+enum class Kind { Unbound, Management, Scanner, Monitor, Listener, Link };
 struct Endpoint {
   int peer = -1;
   int protocol = 0;
@@ -97,6 +97,8 @@ struct SocketController {
   std::string kernelRelease = "4.9.84";
   bool controllerAttached = true;
   int scanner = -1;
+  int monitor = -1;
+  bool denyMonitor = false;
   int listener = -1;
   int outgoing = -1;
   int connectError = 0;
@@ -186,12 +188,15 @@ struct Fixture {
   bool powered = false;
   int64_t now = 100;
 
-  explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0) {
+  explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0,
+                   bool monitor = false, bool denyMonitor = false) {
     controller = &sockets;
     sockets.kernelRelease = std::move(release);
     sockets.secureConnectionsStatus = scStatus;
+    sockets.denyMonitor = denyMonitor;
     LinuxBleRadio::Options options;
     options.connectAttempts = attempts;
+    options.monitorInput = monitor;
     options.log = [this](const std::string& line) { logs.push_back(line); };
     radio = std::make_unique<LinuxBleRadio>(std::move(options));
     BleRadio::Events events;
@@ -255,6 +260,56 @@ struct Fixture {
     dispatch(sockets.scanner, POLLIN);
   }
 };
+
+void hciMonitorReceivesOnlyIncomingAttMetadata() {
+  Fixture fixture(3, "4.9.84", 0, true);
+  check(fixture.sockets.monitor >= 0 && fixture.sockets.monitor != fixture.sockets.scanner,
+        "HCI diagnostics use a separate monitor socket");
+  const auto record = [](uint16_t op, uint16_t index, uint16_t flags, const Bytes& fragment) {
+    Bytes packet;
+    appendWord(packet, op);
+    appendWord(packet, index);
+    appendWord(packet, static_cast<uint16_t>(4 + fragment.size()));
+    appendWord(packet, flags);
+    appendWord(packet, static_cast<uint16_t>(fragment.size()));
+    packet.insert(packet.end(), fragment.begin(), fragment.end());
+    return packet;
+  };
+  const auto send = [&](const Bytes& packet) {
+    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
+    fixture.dispatch(fixture.sockets.monitor, POLLIN);
+  };
+  // L2CAP ATT, notification handle 30, two opaque payload bytes.
+  const Bytes notify{5, 0, 4, 0, 0x1b, 30, 0, 0xaa, 0xbb};
+  send(record(4, 0, 0x2042, notify));
+  send(record(5, 1, 0x2042, notify));
+  send(record(5, 0, 0x2042, {1, 0, 4, 0, 0x0b}));
+  for (int i = 0; i < 5; ++i) send(record(5, 0, 0x2042, notify));
+  send(record(5, 0, 0x1042, {0xaa, 0xbb}));
+  send({5, 0, 0, 0, 99, 0});
+  const auto count = std::count_if(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("ATT RX notification value handle 30") != std::string::npos;
+  });
+  check(count == 3, "HCI notification logs are bounded and ignore TX and other controllers");
+  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("ATT RX opcode 11") != std::string::npos;
+  }), "HCI read responses prove monitor reception independently of the ATT socket");
+  fixture.radio->power(false);
+  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("notifications/indications 5, continuation fragments 1") != std::string::npos;
+  }), "HCI summary reports notification totals and undecoded continuation fragments");
+  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("malformed/truncated/over-limit records 1") != std::string::npos;
+  }), "malformed monitor records are counted rather than decoded");
+}
+
+void unavailableHciMonitorDoesNotBlockBluetooth() {
+  Fixture fixture(3, "4.9.84", 0, true, true);
+  check(fixture.powered && fixture.sockets.monitor < 0, "Bluetooth starts when monitor access is denied");
+  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
+    return line.find("HCI input monitor unavailable") != std::string::npos;
+  }), "monitor failures are explicit");
+}
 
 void socketNotificationDiagnosticsAreBounded() {
   Fixture fixture;
@@ -881,6 +936,15 @@ extern "C" int __wrap_bind(int fd, const sockaddr* address, socklen_t length) {
   auto& endpoint = controller->endpoints.at(fd);
   if (endpoint.protocol == kHci && length >= sizeof(HciAddress)) {
     const auto* hci = reinterpret_cast<const HciAddress*>(address);
+    if (hci->channel == 2) {
+      if (controller->denyMonitor) {
+        errno = EACCES;
+        return -1;
+      }
+      endpoint.kind = Kind::Monitor;
+      controller->monitor = fd;
+      return 0;
+    }
     endpoint.kind = hci->channel == 3 ? Kind::Management : Kind::Scanner;
     if (endpoint.kind == Kind::Scanner) controller->scanner = fd;
   }
@@ -985,6 +1049,8 @@ extern "C" int __wrap_uname(utsname* information) {
 }
 
 int main() {
+  hciMonitorReceivesOnlyIncomingAttMetadata();
+  unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();
   outgoingConnectionsAreQueued();

@@ -74,11 +74,14 @@ input reports are logged per connection. BLE logs include the Report Reference d
 notification configuration results, security requests and their completion or timeout. No pairing
 keys or input payloads are logged.
 
-After notification configuration succeeds, a gamepad subscription requests one read of the
-selected Input Report value if it is readable. This follows the Xbox initialization sequence
-in Pybricks. The hub's internal `readInitial` subscription flag requests this read; script
-subscriptions keep their existing behavior. Read results and ATT errors are logged, but a read
-alone does not make a gamepad Ready: live input still requires a valid notification. The first
+After notification configuration succeeds, a gamepad subscription reads the selected Input
+Report if it is readable, following the Xbox initialization sequence in Pybricks. While no
+notification arrives, diagnostics take up to six samples, three seconds apart. Logs distinguish
+the baseline, changed and unchanged samples without exposing input bytes. Sampling stops on a
+notification, read error, unsubscribe or disconnect. The hub's internal `readInitial` flag requests
+this diagnostic; script subscriptions keep their existing behavior. Read results and ATT errors
+are logged, but a read alone does not make a gamepad Ready: live input still requires a valid
+notification. The first
 three notifications or indications on each connection log their handle, length and subscriber
 count, including values with no matching subscription. Their payloads are not logged.
 The same gamepad initialization reads back the notification configuration descriptor and logs
@@ -87,6 +90,16 @@ ending the subscription. The Linux socket backend independently logs its first t
 notifications or indications per connection before handing them to the hub, with the value handle
 and payload length. This distinguishes socket reception from hub routing without logging input
 payloads.
+
+With gamepad support enabled, the Linux radio also attempts to open a separate HCI monitor
+socket. A failure is logged and does not prevent Bluetooth startup. It inspects only incoming
+ACL records for its controller and logs at most three ATT packet opcodes and three notification
+or indication headers per HCI connection handle. Summaries count ACL records, ATT starts,
+notifications and continuation fragments. Continuations are not reassembled; malformed,
+truncated or over-limit records are counted, so incomplete monitor evidence must not be treated
+as proof that the controller sent no input. At most sixteen handles are tracked and each dispatch
+processes at most thirty-two monitor records. No monitor capture is written to disk and no
+pairing keys or input payloads are logged.
 
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
 events go through one queue in the manager, so reports from the two gamepads are handled in

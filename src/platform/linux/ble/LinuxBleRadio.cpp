@@ -29,6 +29,7 @@ LinuxBleRadio::~LinuxBleRadio() {
   links_.clear();
   if (scanFd_ >= 0) ::close(scanFd_);
   if (listenFd_ >= 0) ::close(listenFd_);
+  closeMonitor();
 }
 
 void LinuxBleRadio::note(const std::string& text) const {
@@ -83,6 +84,7 @@ void LinuxBleRadio::collect(std::vector<pollfd>& out) const {
   if (management_.fd() >= 0) out.push_back({management_.fd(), POLLIN, 0});
   if (scanFd_ >= 0) out.push_back({scanFd_, POLLIN, 0});
   if (listenFd_ >= 0) out.push_back({listenFd_, POLLIN, 0});
+  if (monitorFd_ >= 0) out.push_back({monitorFd_, POLLIN, 0});
   for (const auto& [id, link] : links_) {
     if (link.fd < 0) continue;
     short events = link.open ? POLLIN : POLLOUT;
@@ -95,6 +97,13 @@ void LinuxBleRadio::dispatch(const std::vector<pollfd>& ready, int64_t nowMs) {
   now_ = nowMs;
   for (const pollfd& p : ready) {
     if (!p.revents) continue;
+    if (p.fd == monitorFd_) {
+      if (p.revents & (POLLHUP | POLLERR | POLLNVAL)) {
+        note("ble: HCI input monitor stopped: socket error");
+        closeMonitor();
+      } else readMonitor();
+      continue;
+    }
     if (p.fd == management_.fd()) {
       readMgmt();
       continue;

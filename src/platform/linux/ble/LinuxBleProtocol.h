@@ -11,6 +11,7 @@ constexpr int kAfBluetooth = 31;
 constexpr int kProtoL2cap = 0;
 constexpr int kProtoHci = 1;
 constexpr unsigned short kChannelRaw = 0;
+constexpr unsigned short kChannelMonitor = 2;
 constexpr unsigned short kChannelControl = 3;
 constexpr unsigned short kNoDevice = 0xffff;
 constexpr int kSolHci = 0;

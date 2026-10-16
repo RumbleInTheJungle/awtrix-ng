@@ -8,9 +8,99 @@
 #include <unistd.h>
 
 #include "platform/linux/ble/LinuxBleProtocol.h"
+#include "platform/linux/ble/Att.h"
 
 namespace awtrix::ble {
 using namespace linux_detail;
+
+void LinuxBleRadio::openMonitor() {
+  monitorFd_ = ::socket(kAfBluetooth, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, kProtoHci);
+  SockaddrHci address{static_cast<sa_family_t>(kAfBluetooth), kNoDevice, kChannelMonitor};
+  if (monitorFd_ < 0 || ::bind(monitorFd_, reinterpret_cast<sockaddr*>(&address), sizeof address) < 0) {
+    const int error = errno;
+    if (monitorFd_ >= 0) ::close(monitorFd_);
+    monitorFd_ = -1;
+    note("ble: HCI input monitor unavailable: " + std::string(std::strerror(error)));
+    return;
+  }
+  note("ble: HCI input monitor enabled (RX metadata only)");
+}
+
+void LinuxBleRadio::summarizeMonitor(uint16_t handle) {
+  auto s = monitorStats_.find(handle);
+  if (s == monitorStats_.end()) return;
+  note("ble: HCI handle " + std::to_string(handle) + " RX summary: ACL " + std::to_string(s->second.acl) +
+       ", ATT starts " + std::to_string(s->second.att) + ", notifications/indications " +
+       std::to_string(s->second.notifications) + ", continuation fragments " + std::to_string(s->second.continuations));
+  monitorStats_.erase(s);
+}
+
+void LinuxBleRadio::closeMonitor() {
+  if (monitorFd_ < 0) return;
+  ::close(monitorFd_);
+  monitorFd_ = -1;
+  while (!monitorStats_.empty()) summarizeMonitor(monitorStats_.begin()->first);
+  note("ble: HCI input monitor closed; malformed/truncated/over-limit records " + std::to_string(monitorDropped_));
+  monitorDropped_ = 0;
+}
+
+// Monitor records have a six-byte header; ACL RX (5) then carries the ACL and L2CAP headers.
+// Inspect only ATT starts. Continuations are counted, not decoded or retained.
+void LinuxBleRadio::readMonitor() {
+  uint8_t packet[4096];
+  for (unsigned budget = 0; budget < 32; ++budget) {
+    const ssize_t received = ::recv(monitorFd_, packet, sizeof packet, MSG_DONTWAIT | MSG_TRUNC);
+    if (received < 0) {
+      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
+        note("ble: HCI input monitor read failed");
+        closeMonitor();
+      }
+      return;
+    }
+    if (received == 0) {
+      closeMonitor();
+      return;
+    }
+    const auto n = static_cast<std::size_t>(received);
+    if (n < 6 || n > sizeof packet || le16(packet + 4) != n - 6) {
+      ++monitorDropped_;
+      continue;
+    }
+    if (le16(packet) != 5 || le16(packet + 2) != index_) continue;
+    if (n < 10 || le16(packet + 8) != n - 10) {
+      ++monitorDropped_;
+      continue;
+    }
+    const uint16_t flags = le16(packet + 6);
+    const uint16_t handle = flags & 0x0fff;
+    if (!monitorStats_.count(handle) && monitorStats_.size() >= 16) {
+      ++monitorDropped_;
+      continue;
+    }
+    auto& stats = monitorStats_[handle];
+    ++stats.acl;
+    if (((flags >> 12) & 3) == 1) {
+      ++stats.continuations;
+      continue;
+    }
+    if (n < 15 || le16(packet + 12) != kAttCid) continue;
+    ++stats.att;
+    const uint8_t op = packet[14];
+    const std::string prefix = "ble: HCI handle " + std::to_string(handle) + " ATT RX ";
+    if (op == att::kNotify || op == att::kIndicate) {
+      ++stats.notifications;
+      if (stats.loggedNotifications < 3) {
+        ++stats.loggedNotifications;
+        note(prefix + (op == att::kNotify ? "notification" : "indication") +
+             (n >= 17 ? " value handle " + std::to_string(le16(packet + 15)) : " (fragmented header)") +
+             ", L2CAP length " + std::to_string(le16(packet + 10)));
+      }
+    } else if (stats.loggedAtt < 3) {
+      ++stats.loggedAtt;
+      note(prefix + "opcode " + std::to_string(op) + ", L2CAP length " + std::to_string(le16(packet + 10)));
+    }
+  }
+}
 
 bool LinuxBleRadio::openScanner() {
   scanFd_ = ::socket(kAfBluetooth, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, kProtoHci);
@@ -121,6 +211,7 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
   if (n < 3 || p[0] != 0x04 || n < static_cast<std::size_t>(p[2]) + 3) return;
   if (p[1] == 0x05 && p[2] >= 4 && p[3] == 0) {
     const uint16_t handle = le16(p + 4);
+    summarizeMonitor(handle);
     peripheralHandles_.erase(handle);
     if (directLink_) {
       auto it = links_.find(directLink_);
