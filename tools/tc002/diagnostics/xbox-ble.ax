@@ -1,6 +1,7 @@
 # @name Xbox BLE Diagnose
-# @desc Ein begrenzter BLE-Test pro App-Neustart; Ergebnisse stehen im Log
-# @version 1.1
+# @desc BLE-Test mit Startschalter in den App-Einstellungen; Ergebnisse stehen im Log
+# @version 1.2
+# @config start_once bool "Test einmal starten" default=false help="Einschalten und Einstellungen speichern; setzt sich vor dem Versuch wieder auf aus"
 # @config address text "Controller-Adresse" default="" maxlen=17 help="Bluetooth-Adresse aus deinem Log"
 # @config mode select "Testablauf" default=notify options=notify,read_first,all_reports help="notify: Report 1; read_first: vorher lesen; all_reports: alle HID-Notifications"
 # @config mtu bool "MTU-Austausch" default=false
@@ -57,7 +58,12 @@ class XboxBleDiagnostic
   end
 
   def setup()
-    self.note("APP START v1.1")
+    if store.get("start_once") != true
+      self.state = "idle"
+      return
+    end
+    store.set("start_once", false)
+    self.note("APP START v1.2")
     if type(self.address) != "string" || size(self.address) != 17
       self.finish("Controller-Adresse in den App-Einstellungen eintragen")
       return
@@ -84,7 +90,7 @@ class XboxBleDiagnostic
         self.note("Kein gespeicherter Controller-Bond vorhanden")
       end
     end
-    self.note("START v1.1 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
+    self.note("START v1.2 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
     self.note("delay_ms=" + str(self.delay_ms) + " duration_ms=" + str(self.duration_ms) + " info=" + str(self.info))
     self.state = "scan"
     self.deadline = now_ms() + 30000
@@ -135,12 +141,13 @@ class XboxBleDiagnostic
     self.note("Verbunden; verschluesselte GATT-Erkennung abgeschlossen")
     self.services = ble.services(self.conn)
     if self.services == nil self.finish("Dienstliste fehlt") return end
+    var reports = 0
     for svc : self.services
-      self.note("Dienst " + svc["uuid"])
       for chr : svc["chars"]
-        self.note("  Wert " + chr["uuid"] + " props=" + chr["props"])
+        if svc["uuid"] == "1812" && chr["uuid"] == "2a4d" reports += 1 end
       end
     end
+    self.note("Dienste=" + str(size(self.services)) + " HID-Reports=" + str(reports))
     self.read_info(0)
   end
 
@@ -219,7 +226,7 @@ class XboxBleDiagnostic
   end
 
   def loop()
-    if self.state == "done" return end
+    if self.state == "done" || self.state == "idle" return end
     if !self.manager_idle() self.finish("Abbruch: Gamepad-Modul wurde aktiv") return end
     var now = now_ms()
     if self.deadline > 0 && now >= self.deadline

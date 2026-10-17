@@ -115,7 +115,8 @@ class DiagnosticTests(unittest.TestCase):
                                     int(value) if parts[3] == "number" else value)
 
     def run_case(self, checks, **settings):
-        config = {**self.defaults, "address": "02:00:00:00:00:01", "info": False, **settings}
+        config = {**self.defaults, "address": "02:00:00:00:00:01", "info": False,
+                  "start_once": True, **settings}
         source = APP.read_text().replace("import ble\n", "").replace("import gamepad\n", "")
         source = source.replace("return XboxBleDiagnostic()", "var app = XboxBleDiagnostic()")
         fixture = self.work / "case.be"
@@ -208,9 +209,41 @@ assert(!h.contains('forgotten'))
         self.run_case("h['bonds'] = [cfg['address']]\nh['reject'] = 'forget'\napp.setup()\nassert(app.state == 'done' && !h.contains('scan'))", forget_once=True)
 
     def test_failure_cleanup_and_start_marker(self):
-        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.1')", address="")
+        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.2' && !cfg['start_once'])", address="")
         self.run_case("app.setup()\nfound()\nh['connect'](nil,'Permission denied')\nassert(app.state == 'done' && h['disconnects'] == [])")
         self.run_case("app.setup()\nlinked()\napp.loop()\nh['disconnect']('peer closed')\nassert(app.state == 'done' && h['disconnects'] == [] && h['stops'] == [1])")
+
+    def test_explicit_start_and_reload(self):
+        self.assertFalse(self.defaults['start_once'])
+        self.run_case(r'''
+h['pad'] = 'pairing'
+app.setup()
+app.loop()
+assert(app.state == 'idle' && h['logs'] == [] && !h.contains('scan'))
+assert(!h.contains('forgotten') && cfg['forget_once'])
+''', start_once=False, forget_once=True)
+        self.run_case(r'''
+app.setup()
+assert(app.state == 'scan' && !cfg['start_once'])
+app.finish('test complete')
+h.remove('scan')
+var rebooted = XboxBleDiagnostic()
+rebooted.setup()
+rebooted.loop()
+assert(rebooted.state == 'idle' && !h.contains('scan'))
+cfg['start_once'] = true
+var restarted = XboxBleDiagnostic()
+restarted.setup()
+assert(restarted.state == 'scan' && !cfg['start_once'])
+''')
+
+    def test_compact_service_log(self):
+        self.run_case(r'''
+app.setup()
+linked()
+assert(size(h['logs']) == 6)
+assert(h['logs'][5] == 'XBD: Dienste=2 HID-Reports=1')
+''')
 
 
 if __name__ == "__main__":
