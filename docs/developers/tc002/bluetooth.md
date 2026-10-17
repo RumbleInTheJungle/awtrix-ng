@@ -66,21 +66,39 @@ confirmed encryption, including on an incoming ATT connection or one replacing a
 connection. A security failure, disconnect or cancellation ends that attempt without starting
 discovery, including when a security result arrives late. A
 previously discovered shared client is reused; the session also checks encryption through `pair`
-before reading the HID Report Map. The Linux radio enables LE Secure Connections before power-on,
-without requiring Secure Connections from older peers; a rejected management command is logged
-and does not prevent Bluetooth startup.
+before reading the HID Report Map. The Linux radio normally enables LE Secure Connections before
+power-on, without requiring Secure Connections from older peers. In this experimental branch,
+the service instead disables Secure Connections when gamepad support is enabled, comparing fresh
+legacy pairing with the Pybricks Technic Hub. Encryption at security level 2 and bonding stay
+enabled. The mode applies to the whole adapter, including other BLE peers; it is not a per-gamepad
+setting. A rejected disable command stops Bluetooth startup rather than silently testing another
+mode. Other radio clients keep the default Secure Connections policy.
+
+The comparison does not erase existing bonds. Remove the controller's saved gamepad entry and
+BLE bond before the test, restart the clock, and put the controller into pairing mode again.
+Verify the New Long Term Key message reports legacy pairing; a reused Secure Connections key
+does not demonstrate a fresh legacy pairing. The ATT MTU comparison remains unchanged.
 
 For a fresh pairing, the management New Long Term Key event logs the peer, key type, encryption
 key size and store hint. Its type distinguishes legacy pairing from LE Secure Connections. No key
 bytes, diversifier or random-number fields are logged. Re-encryption with an existing bond need
 not generate this event, so absence of the message does not identify the pairing method.
 
-For the Technic Hub comparison, new gamepad clients whose advertised name contains `Xbox` or is absent pass the internal `exchangeMtu: false`
+For the Technic Hub comparison, new gamepad clients whose advertised name contains `Xbox` or is
+absent pass the internal `exchangeMtu: false`
 connection option. They start service discovery without sending an Exchange MTU request and
 use the default ATT MTU of 23 bytes. The local server caps a peer-initiated exchange at 23 on
 that link. Long Report Maps are still read completely through Read Blob requests. Other gamepads and ordinary BLE
 clients retain MTU exchange, and an already negotiated larger MTU on a shared link is preserved
-and logged rather than lowered in place. This comparison does not change the pairing method.
+and logged rather than lowered in place. MTU policy is independent of the pairing comparison.
+
+Additional reference implementations are [Bluepad32's BLE connection and security setup](https://github.com/ricardoquesada/bluepad32/blob/main/src/components/bluepad32/bt/uni_bt_le.c)
+and [BlueZ's HID-over-GATT client](https://github.com/bluez/bluez/blob/master/src/shared/hog.c).
+Bluepad32 pairs before querying device information and connecting the HID client. BlueZ reads
+Report Reference descriptors and enables Input Report notifications. The
+[xpadneo troubleshooting guide](https://github.com/atar-axis/xpadneo/blob/master/docs/TROUBLESHOOTING.md)
+also describes connection-parameter and stale-bond problems. Those are separate hypotheses;
+neither changing intervals nor replacing the HID driver is part of the legacy pairing test.
 
 The gamepad log distinguishes security, report-map and subscription failures, and names the
 last phase when the 60-second pairing window expires. Report-map messages describe the expected

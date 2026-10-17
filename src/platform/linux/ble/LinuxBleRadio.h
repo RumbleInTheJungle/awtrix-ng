@@ -33,6 +33,7 @@ class LinuxBleRadio : public BleRadio {
     int64_t retryDelayMs = 1000;
     int64_t secureTimeoutMs = 30000;
     bool monitorInput = false;
+    bool secureConnections = true;
     std::function<void(const std::string&)> log;
   };
 

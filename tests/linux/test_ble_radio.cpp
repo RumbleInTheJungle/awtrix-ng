@@ -189,7 +189,7 @@ struct Fixture {
   int64_t now = 100;
 
   explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0,
-                   bool monitor = false, bool denyMonitor = false) {
+                   bool monitor = false, bool denyMonitor = false, bool enableSc = true) {
     controller = &sockets;
     sockets.kernelRelease = std::move(release);
     sockets.secureConnectionsStatus = scStatus;
@@ -197,6 +197,7 @@ struct Fixture {
     LinuxBleRadio::Options options;
     options.connectAttempts = attempts;
     options.monitorInput = monitor;
+    options.secureConnections = enableSc;
     options.log = [this](const std::string& line) { logs.push_back(line); };
     radio = std::make_unique<LinuxBleRadio>(std::move(options));
     BleRadio::Events events;
@@ -208,7 +209,8 @@ struct Fixture {
     };
     radio->setEvents(std::move(events));
     radio->power(true);
-    check(powered && sockets.scanner >= 0 && sockets.listener >= 0, "radio powers through the socket backend");
+    if (!enableSc && scStatus != 0) check(!powered, "a rejected legacy test does not power on");
+    else check(powered && sockets.scanner >= 0 && sockets.listener >= 0, "radio powers through the socket backend");
   }
 
   ~Fixture() {
@@ -386,6 +388,25 @@ void secureConnectionsConfiguration() {
     check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
       return line.find(expected) != std::string::npos;
     }), "Secure Connections result is visible, and unsupported controllers still power on");
+  }
+  for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
+    Fixture fixture(3, "4.9.84", status, false, false, false);
+    const auto& commands = fixture.sockets.managementCommands;
+    auto secure = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x002d;
+    });
+    auto power = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x0005;
+    });
+    check(secure != commands.end() && secure->size() == 7 && (*secure)[6] == 0,
+          "legacy comparison explicitly disables Secure Connections");
+    check(status == 0 ? power != commands.end() && secure < power : power == commands.end(),
+          "legacy comparison powers on only after the controller accepts its security mode");
+    const std::string expected = status == 0 ? "disabled for the whole adapter; existing bonds unchanged" :
+                                             "legacy pairing test unavailable";
+    check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+      return line.find(expected) != std::string::npos;
+    }), "legacy comparison logs both its scope and a rejected mode change");
   }
 }
 

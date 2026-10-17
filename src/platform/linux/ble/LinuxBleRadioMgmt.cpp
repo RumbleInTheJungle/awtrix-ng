@@ -135,10 +135,17 @@ void LinuxBleRadio::configure() {
   slots_ = mgmt(kReadAdvFeatures, {}, &features) == 0 && features.size() >= 7 ? features[6] : 0;
   mgmt(kSetIoCapability, {0x03});
   mgmt(kSetBondable, {0x01});
-  // Enable Secure Connections while allowing legacy pairing for older BLE devices.
-  const int sc = mgmt(kSetSecureConnections, {0x01});
-  note(sc == 0 ? "ble: LE Secure Connections enabled" :
-       "ble: LE Secure Connections unavailable (status " + std::to_string(sc) + ")");
+  const int sc = mgmt(kSetSecureConnections, {static_cast<uint8_t>(options_.secureConnections ? 1 : 0)});
+  if (!options_.secureConnections) {
+    if (sc != 0) {
+      fail("legacy pairing test unavailable: cannot disable LE Secure Connections (status " + std::to_string(sc) + ")");
+      return;
+    }
+    note("ble: legacy pairing test: LE Secure Connections disabled for the whole adapter; existing bonds unchanged");
+  } else {
+    note(sc == 0 ? "ble: LE Secure Connections enabled" :
+         "ble: LE Secure Connections unavailable (status " + std::to_string(sc) + ")");
+  }
   mgmt(kSetConnectable, {0x01});
   Bytes irks;
   put16(irks, static_cast<uint16_t>(bonds_.irks().size()));

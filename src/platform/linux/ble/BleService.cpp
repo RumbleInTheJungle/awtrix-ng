@@ -20,6 +20,8 @@ BleService::BleService(Options options, std::function<void(BleEvent)> sink)
     : options_(std::move(options)), sink_(std::move(sink)) {
   LinuxBleRadio::Options radio;
   radio.monitorInput = options_.gamepad;
+  // Experimental Technic Hub comparison; the kernel setting applies to the whole adapter.
+  radio.secureConnections = !options_.gamepad;
   radio.bondsPath = options_.bondsPath;
   radio.log = [this](const std::string& line) {
     std::lock_guard<std::mutex> lock(logMutex_);
