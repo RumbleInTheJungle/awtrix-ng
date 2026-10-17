@@ -1,6 +1,6 @@
 # @name Xbox BLE Diagnose
 # @desc BLE-Test mit Startschalter in den App-Einstellungen; Ergebnisse stehen im Log
-# @version 1.3
+# @version 1.4
 # @config start_once bool "Test einmal starten" default=false help="Einschalten und Einstellungen speichern; setzt sich vor dem Versuch wieder auf aus"
 # @config address text "Controller-Adresse" default="" maxlen=17 help="Bluetooth-Adresse aus deinem Log"
 # @config mode select "Testablauf" default=notify options=notify,read_first,all_reports help="notify: Report 1; read_first: vorher lesen; all_reports: alle HID-Notifications"
@@ -10,6 +10,7 @@
 # @config duration number "Beobachtungsdauer" default=60 min=20 max=180 unit=s
 # @config info bool "Geräteinformationen lesen" default=true
 # @config report_map bool "HID-Report-Map vorher lesen" default=false help="Liest vor Eingabeproben und Abonnement die Report-Map wie Pybricks; protokolliert nur die Laenge"
+# @config exit_suspend bool "HID-Ruhezustand verlassen" default=false help="Sendet einmal Exit Suspend vor Eingabeproben und Abonnement; experimentell, ohne Bestaetigung vom Controller"
 # @config forget_once bool "Controller-Kopplung einmal löschen" default=false help="Löscht nur den Bond dieser Adresse vor dem Scan und schaltet sich selbst wieder aus"
 
 import ble
@@ -18,7 +19,7 @@ import string
 
 class XboxBleDiagnostic
   var state, scan, conn, subscription, deadline, action_at
-  var address, mode, mtu, timing, delay_ms, duration_ms, info, report_map
+  var address, mode, mtu, timing, delay_ms, duration_ms, info, report_map, exit_suspend
   var services, notifications, samples, previous, changed, next_read, reading
 
   def init()
@@ -41,6 +42,7 @@ class XboxBleDiagnostic
     self.timing = store.get("timing") == true
     self.info = store.get("info") == true
     self.report_map = store.get("report_map") == true
+    self.exit_suspend = store.get("exit_suspend") == true
     var pause = store.get("delay")
     var duration = store.get("duration")
     self.delay_ms = type(pause) == "int" ? pause : 0
@@ -65,7 +67,7 @@ class XboxBleDiagnostic
       return
     end
     store.set("start_once", false)
-    self.note("APP START v1.3")
+    self.note("APP START v1.4")
     if type(self.address) != "string" || size(self.address) != 17
       self.finish("Controller-Adresse in den App-Einstellungen eintragen")
       return
@@ -92,9 +94,9 @@ class XboxBleDiagnostic
         self.note("Kein gespeicherter Controller-Bond vorhanden")
       end
     end
-    self.note("START v1.3 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
+    self.note("START v1.4 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
     self.note("delay_ms=" + str(self.delay_ms) + " duration_ms=" + str(self.duration_ms) + " info=" + str(self.info))
-    self.note("report_map=" + str(self.report_map))
+    self.note("report_map=" + str(self.report_map) + " exit_suspend=" + str(self.exit_suspend))
     self.state = "scan"
     self.deadline = now_ms() + 30000
     self.scan = ble.scan(def (device, err)
@@ -205,6 +207,26 @@ class XboxBleDiagnostic
   end
 
   def before_subscription()
+    if !self.exit_suspend
+      self.begin_pause()
+      return
+    end
+    if !self.has("1812", "2a4c", "x")
+      self.finish("HID-Control-Point mit Write Command fehlt")
+      return
+    end
+    self.state = "resume"
+    self.deadline = now_ms() + 10000
+    var request = ble.write(self.conn, "1812", "2a4c", bytes("01"), def (ok, err)
+      if self.state != "resume" return end
+      if err != nil || ok != true self.finish("Exit Suspend: " + str(err)) return end
+      self.note("Exit Suspend 01 lokal gesendet; ohne Peer-Bestaetigung")
+      self.begin_pause()
+    end, true)
+    if request == nil self.finish("Exit-Suspend-Anfrage abgelehnt") end
+  end
+
+  def begin_pause()
     self.state = "pause"
     self.action_at = now_ms() + self.delay_ms
     self.deadline = self.action_at + 15000

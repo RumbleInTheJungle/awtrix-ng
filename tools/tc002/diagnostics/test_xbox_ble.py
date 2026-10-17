@@ -69,13 +69,19 @@ ble.disconnect = def (id) h['disconnects'].push(id) return true end
 ble.on_disconnect = def (id, cb) h['disconnect'] = cb end
 ble.services = def (id)
   if h.find('missing_map', false) return [] end
-  return [{'uuid':'1812', 'chars':[{'uuid':'2a4d','props':'rn'}, {'uuid':'2a4b','props':'r'}]},
+  return [{'uuid':'1812', 'chars':[{'uuid':'2a4d','props':'rn'}, {'uuid':'2a4b','props':'r'},
+                                  {'uuid':'2a4c','props':h.find('control_props', 'x')}]},
           {'uuid':'180a', 'chars':[{'uuid':'2a26','props':'r'}]}]
 end
 ble.read = def (id, svc, chr, cb)
   h['read'] = cb
   h['read_chr'] = chr
   return h['reject'] == 'read' ? nil : 3
+end
+ble.write = def (id, svc, chr, data, cb, noresp)
+  h['write'] = cb
+  h['write_args'] = [id, svc, chr, data.tohex(), noresp]
+  return h['reject'] == 'write' ? nil : 5
 end
 ble.subscribe = def (id, svc, chr, cb, opts)
   h['notify'] = cb
@@ -210,7 +216,7 @@ assert(!h.contains('forgotten'))
         self.run_case("h['bonds'] = [cfg['address']]\nh['reject'] = 'forget'\napp.setup()\nassert(app.state == 'done' && !h.contains('scan'))", forget_once=True)
 
     def test_failure_cleanup_and_start_marker(self):
-        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.3' && !cfg['start_once'])", address="")
+        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.4' && !cfg['start_once'])", address="")
         self.run_case("app.setup()\nfound()\nh['connect'](nil,'Permission denied')\nassert(app.state == 'done' && h['disconnects'] == [])")
         self.run_case("app.setup()\nlinked()\napp.loop()\nh['disconnect']('peer closed')\nassert(app.state == 'done' && h['disconnects'] == [] && h['stops'] == [1])")
 
@@ -279,6 +285,48 @@ assert(app.state == 'listen' && h.contains('notify'))
             with self.subTest(setup=setup, action=action):
                 self.run_case(setup + "\napp.setup()\nlinked()\n" + action +
                               "\nassert(app.state == 'done' && !h.contains('notify'))", report_map=True)
+
+    def test_exit_suspend_is_optional_and_precedes_input(self):
+        self.assertFalse(self.defaults['exit_suspend'])
+        self.run_case("app.setup()\nlinked()\napp.loop()\nassert(!h.contains('write'))")
+        for mode in ('notify', 'read_first', 'all_reports'):
+            with self.subTest(mode=mode):
+                self.run_case(r'''
+app.setup()
+linked()
+assert(app.state == 'info' && !h.contains('write'))
+h['read'](bytes('352e39'), nil)
+assert(app.state == 'map' && !h.contains('write'))
+h['read'](bytes('05010905'), nil)
+assert(app.state == 'resume' && !h.contains('notify') && app.samples == 0)
+assert(h['write_args'] == [2, '1812', '2a4c', '01', true])
+app.loop()
+assert(app.state == 'resume')
+h['write'](true, nil)
+assert(app.state == 'pause')
+app.loop()
+assert(app.state == 'pause')
+h['now'] = 1000
+app.loop()
+if cfg['mode'] == 'read_first'
+  assert(app.state == 'read' && h['read_chr'] == '2a4d')
+  h['read'](bytes('0102'), nil)
+end
+assert(app.state == 'listen' && h.contains('notify'))
+''', exit_suspend=True, report_map=True, info=True, delay=1000, mode=mode)
+
+    def test_exit_suspend_failures_and_late_reply(self):
+        for setup, action in (
+            ("h['control_props'] = ''", "assert(!h.contains('write'))"),
+            ("h['control_props'] = 'w'", "assert(!h.contains('write'))"),
+            ("h['reject'] = 'write'", ""),
+            ("", "h['write'](nil, 'send failed')"),
+            ("", "h['now'] = app.deadline\napp.loop()\nh['write'](true,nil)"),
+            ("", "h['disconnect']('peer closed')\nh['write'](true,nil)"),
+        ):
+            with self.subTest(setup=setup, action=action):
+                self.run_case(setup + "\napp.setup()\nlinked()\n" + action +
+                              "\nassert(app.state == 'done' && !h.contains('notify'))", exit_suspend=True)
 
 
 if __name__ == "__main__":
