@@ -964,6 +964,7 @@ void xboxUsesDefaultMtu() {
   r.pad->pair(r.now);
   r.step();
   r.advert("68:6C:E6:7A:21:A5", "Xbox");
+  check(r.radio.timingRequests.size() == 1, "Xbox requests the Technic timing comparison once");
   check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
     return !packet.second.empty() && packet.second[0] == att::kMtuReq;
   }), "Xbox discovery does not initiate MTU exchange");
@@ -996,6 +997,7 @@ void gamepadWaitsForEncryption() {
   r.radio.events.secured(link, true, "");
   r.step();
   check(readMap(), "HID report map is read after security completes");
+  check(r.radio.timingRequests.empty(), "other named gamepads keep their connection timing");
   r.report(1);
   check(r.status() == GamepadStatus::Ready && r.buttons() == 1, "encrypted gamepad reaches ready on input");
 }
@@ -1282,12 +1284,14 @@ void encryptedDiscoveryPreservesConnectionOwnership() {
         r.radio.events.accepted(7, peer);
       };
       if (mode == 1) accept();
-      r.hub.call("a", "connect", R"({"addr":"02:00:00:00:00:23","secure":true,"exchangeMtu":false})", 1, r.now);
+      r.radio.timingSupported = mode != 1;
+      r.hub.call("a", "connect", R"({"addr":"02:00:00:00:00:23","secure":true,"exchangeMtu":false,"technicTiming":true})", 1, r.now);
       if (mode == 2) accept();
       r.settle();
       const int id = mode == 0 ? 100 : 7;
       check(r.radio.sent.empty() && r.events.of("a", 1).empty(),
             "outgoing, reused and replacement links wait for security before ATT discovery");
+      check(r.radio.timingRequests.empty(), "timing request waits for encryption");
       if (outcome >= 2) {
         if (outcome == 2) r.radio.events.disconnected(id);
         else r.hub.forget("a", r.now);
@@ -1298,6 +1302,8 @@ void encryptedDiscoveryPreservesConnectionOwnership() {
         r.radio.events.secured(id, outcome == 0, outcome == 0 ? "" : "security rejected");
       }
       r.settle();
+      check(r.radio.timingRequests == (outcome == 0 ? std::vector<int>{id} : std::vector<int>{}),
+            "only successful security requests timing once on the adopted physical link");
       if (outcome == 0) {
         check(!r.radio.sent.empty() && has(r.events.last("a", 1), "\"connected\":true"),
               "confirmed security starts discovery on the correct physical link");

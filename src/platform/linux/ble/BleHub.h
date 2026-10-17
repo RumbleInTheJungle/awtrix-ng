@@ -71,6 +71,7 @@ class BleHub {
     bool secureDiscovery = false;
     bool securingDiscovery = false;
     bool exchangeMtu = true;
+    bool technicTiming = false;
     std::unique_ptr<GattClient> client;
     std::set<Key> waiting;
     std::set<Key> users;

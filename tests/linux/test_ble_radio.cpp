@@ -286,17 +286,17 @@ void connectionParameterDiagnostics() {
     packet.push_back(0);
     send(packet);
   }
-  check(logged("local role central, interval 8.75 ms, latency 2 events, supervision timeout 3000 ms") &&
-        logged("local role peripheral, interval 8.75 ms, latency 2 events, supervision timeout 3000 ms"),
+  check(logged("central, interval 8.75ms, latency 2, timeout 3000ms") &&
+        logged("peripheral, interval 8.75ms, latency 2, timeout 3000ms"),
         "ordinary and enhanced connection events decode role, offsets and units");
   send({4, 0x3e, 10, 3, 0, 18, 0, 40, 0, 0, 0, 60, 0});
-  check(logged("connection updated: interval 50.00 ms, latency 0 events, supervision timeout 600 ms"),
+  check(logged("updated: interval 50.00ms, latency 0, timeout 600ms"),
         "successful update reports the applied parameters");
   send({4, 0x3e, 10, 3, 0x1e, 18, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff});
-  check(logged("connection update failed (status 0x1e)") && !logged("81918.75"),
+  check(logged("update failed (status 0x1e)") && !logged("81918.75"),
         "failed update does not report undefined parameter fields");
   send({4, 0x3e, 11, 6, 18, 0, 7, 0, 9, 0, 0, 0, 44, 1});
-  check(logged("remote parameter request: interval 8.75..11.25 ms, latency 0 events, supervision timeout 3000 ms"),
+  check(logged("peer request: interval 8.75..11.25ms, latency 0, timeout 3000ms"),
         "remote requests report the requested interval range");
   const auto count = fixture.logs.size();
   send({4, 0x3e, 10, 3, 0, 18, 0});
@@ -304,6 +304,56 @@ void connectionParameterDiagnostics() {
   send({4, 0x3e, 1, 0x0a});
   check(fixture.logs.size() == count, "truncated parameter events are ignored");
   check(fixture.sockets.rawCommands.size() == commands, "parameter diagnostics send no HCI commands");
+  for (const auto& line : fixture.logs)
+    check(line.size() < 120, "connection parameter log lines fit the clock log");
+}
+
+void technicTimingUsesTheSocketHandle() {
+  for (bool incoming : {false, true}) {
+    Fixture fixture(3, "4.9.84", 0, true);
+    Address peer;
+    Address::parse("68:6C:E6:7A:21:A5", false, peer);
+    int id, fd;
+    if (incoming) {
+      fd = fixture.accept("68:6C:E6:7A:21:A5");
+      id = fixture.accepted.back();
+    } else {
+      id = fixture.radio->connect(peer, 2);
+      fd = fixture.sockets.outgoing;
+      check(!fixture.radio->requestTechnicTiming(id), "pending connections cannot request timing");
+      fixture.dispatch(fd, POLLOUT);
+    }
+    fixture.sockets.endpoints.at(fd).connectionHandle = 18;
+    check(!fixture.radio->requestTechnicTiming(id), "unknown HCI role cannot request timing");
+    fixture.leConnectionComplete(peer, 0, 18, incoming);
+    check(fixture.sockets.countCommand(0x2013) == 0, "connection event alone leaves timing unchanged");
+    fixture.sockets.unwritable = 0x2013;
+    check(!fixture.radio->requestTechnicTiming(id), "a failed HCI write is not reported as queued");
+    fixture.sockets.unwritable = 0;
+    check(fixture.radio->requestTechnicTiming(id), "both socket paths can request central timing");
+    const Bytes expected{1, 0x13, 0x20, 14, 18, 0, 40, 0, 40, 0, 0, 0, 60, 0, 0, 0, 0, 0};
+    check(fixture.sockets.rawCommands.back() == expected,
+          "LE Connection Update targets the socket handle with 50ms, zero latency and 600ms timeout");
+    fixture.sockets.sendTo(fixture.sockets.scanner, {4, 0x0f, 4, 0x0c, 1, 0x13, 0x20});
+    fixture.dispatch(fixture.sockets.scanner, POLLIN);
+    check(fixture.logs.back().find("HCI 0x2013 refused (status 0x0c)") != std::string::npos,
+          "controller refusal of the timing request is logged");
+    fixture.sockets.sendTo(fixture.sockets.scanner, {4, 0x0f, 4, 0, 1, 0x13, 0x20});
+    fixture.dispatch(fixture.sockets.scanner, POLLIN);
+    check(fixture.logs.back().find("accepted; waiting for connection update result") != std::string::npos,
+          "command acceptance does not claim negotiated timing");
+    fixture.disconnectionComplete(18);
+    check(!fixture.radio->requestTechnicTiming(id), "disconnection clears the handle role");
+    Bytes peripheral{4, 0x3e, 19, 1, 0, 18, 0, 1, 0};
+    peripheral.resize(22, 0);
+    fixture.sockets.sendTo(fixture.sockets.scanner, peripheral);
+    fixture.dispatch(fixture.sockets.scanner, POLLIN);
+    const auto count = fixture.sockets.countCommand(0x2013);
+    check(!fixture.radio->requestTechnicTiming(id) && fixture.sockets.countCommand(0x2013) == count,
+          "a handle reused for a peripheral connection is never updated");
+    fixture.radio->disconnect(id);
+    check(!fixture.radio->requestTechnicTiming(id), "closed links cannot request timing");
+  }
 }
 
 void pairingMethodMetadataContainsNoKeyMaterial() {
@@ -1142,6 +1192,7 @@ extern "C" int __wrap_uname(utsname* information) {
 }
 
 int main() {
+  technicTimingUsesTheSocketHandle();
   pairingMethodMetadataContainsNoKeyMaterial();
   hciMonitorReceivesOnlyIncomingAttMetadata();
   unavailableHciMonitorDoesNotBlockBluetooth();

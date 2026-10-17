@@ -51,6 +51,7 @@ class LinuxBleRadio : public BleRadio {
   bool secure(int link, int securityLevel) override;
   int security(int link) const override;
   Address peer(int link) const override;
+  bool requestTechnicTiming(int link) override;
   int advertisingSlots() const override { return slots_; }
   bool advertise(int instance, bool connectable, const Bytes& adv, const Bytes& scanResponse,
                  std::string& error) override;

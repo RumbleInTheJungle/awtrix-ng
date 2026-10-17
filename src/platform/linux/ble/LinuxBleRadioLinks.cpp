@@ -307,6 +307,35 @@ int LinuxBleRadio::security(int id) const {
   return s.level;
 }
 
+bool LinuxBleRadio::requestTechnicTiming(int id) {
+  const auto it = links_.find(id);
+  if (it == links_.end() || !it->second.open) return false;
+  L2capConninfo info{};
+  socklen_t size = sizeof info;
+  if (::getsockopt(it->second.fd, kSolL2cap, kL2capConninfo, &info, &size) < 0 || size < sizeof info) {
+    note("ble: link " + std::to_string(id) + " Technic timing skipped: no HCI handle");
+    return false;
+  }
+  const auto role = peripheralHandles_.find(info.handle);
+  if (role == peripheralHandles_.end() || role->second) {
+    note("ble: link " + std::to_string(id) + " Technic timing skipped: central role not confirmed");
+    return false;
+  }
+  // Pybricks CC2640 timing: interval units 1.25 ms, timeout units 10 ms.
+  Bytes params;
+  put16(params, info.handle);
+  put16(params, 40);
+  put16(params, 40);
+  put16(params, 0);
+  put16(params, 60);
+  put16(params, 0);
+  put16(params, 0);
+  const bool queued = hciCommand(0x2013, params);
+  note("ble: HCI " + std::to_string(info.handle) + " Technic timing " + (queued ? "queued" : "send failed") +
+       ": interval 50ms, latency 0, timeout 600ms");
+  return queued;
+}
+
 bool LinuxBleRadio::secure(int id, int level) {
   auto it = links_.find(id);
   if (it == links_.end() || !it->second.open) return false;

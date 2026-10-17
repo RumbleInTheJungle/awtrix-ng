@@ -63,8 +63,8 @@ With gamepad diagnostics enabled, ordinary and enhanced LE Connection Complete e
 HCI handle, local central/peripheral role, connection interval in milliseconds, peripheral
 latency in connection events and supervision timeout in milliseconds. LE Connection Update
 Complete logs the applied values on success or only the status on failure. LE Remote Connection
-Parameter Request logs the requested interval range, latency and timeout. These are observations
-on the existing raw HCI socket; they send no parameter commands or replies. Only events delivered
+Parameter Request logs the requested interval range, latency and timeout. Compact lines keep the
+timeout visible in the clock log. These observations send no replies. Only events delivered
 by the kernel are visible. Absence of a request log does not exclude negotiation through L2CAP
 or inside the controller. The legacy-pairing and MTU test settings remain in effect.
 
@@ -101,13 +101,30 @@ that link. Long Report Maps are still read completely through Read Blob requests
 clients retain MTU exchange, and an already negotiated larger MTU on a shared link is preserved
 and logged rather than lowered in place. MTU policy is independent of the pairing comparison.
 
+The same Xbox or unnamed gamepad profile also passes the internal `technicTiming: true` option.
+After encryption, before starting a new GATT client, it requests a 50 ms connection interval,
+zero peripheral latency and a 600 ms supervision timeout. These are the connection establishment
+values from [Pybricks' Technic Hub CC2640 driver](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/lib/pbio/drv/bluetooth/bluetooth_stm32_cc2640.c).
+Here they are requested through LE Connection Update (`0x2013`) on an existing connection;
+Linux's initial connection parameters remain unchanged. This is a timing comparison, not a
+replacement of the Linux Bluetooth stack or a complete reproduction of Pybricks' radio setup.
+
+The radio obtains the HCI handle from the ATT socket and sends the request only if an HCI event
+confirmed the local central role. This covers outgoing sockets and adopted kernel connections.
+A missing handle, unknown role, peripheral role or failed write is logged and discovery continues.
+Each new GATT client tries once, without retrying or blocking discovery for the result. Existing
+shared GATT clients keep their timing. Other named gamepads and ordinary BLE clients do not request
+this profile. The command's `queued` or `accepted` log does not establish success: look for
+`updated: interval 50.00ms, latency 0, timeout 600ms`. A refusal or failed update is logged, and
+later updates remain visible. No parameter request from the peer is overridden by this test.
+
 Additional reference implementations are [Bluepad32's BLE connection and security setup](https://github.com/ricardoquesada/bluepad32/blob/main/src/components/bluepad32/bt/uni_bt_le.c)
 and [BlueZ's HID-over-GATT client](https://github.com/bluez/bluez/blob/master/src/shared/hog.c).
 Bluepad32 pairs before querying device information and connecting the HID client. BlueZ reads
 Report Reference descriptors and enables Input Report notifications. The
 [xpadneo troubleshooting guide](https://github.com/atar-axis/xpadneo/blob/master/docs/TROUBLESHOOTING.md)
-also describes connection-parameter and stale-bond problems. Those are separate hypotheses;
-neither changing intervals nor replacing the HID driver is part of the legacy pairing test.
+also describes connection-parameter and stale-bond problems. Its shorter suggested interval is
+a separate hypothesis from the 50 ms Technic Hub comparison used here.
 
 The gamepad log distinguishes security, report-map and subscription failures, and names the
 last phase when the 60-second pairing window expires. Report-map messages describe the expected

@@ -50,6 +50,9 @@ class BleRadio {
   virtual int security(int link) const = 0;
   virtual Address peer(int link) const = 0;
 
+  // Experimental Technic Hub timing comparison; true means queued, not negotiated.
+  virtual bool requestTechnicTiming(int) { return false; }
+
   virtual int advertisingSlots() const = 0;
   virtual bool advertise(int instance, bool connectable, const Bytes& adv, const Bytes& scanResponse,
                          std::string& error) = 0;

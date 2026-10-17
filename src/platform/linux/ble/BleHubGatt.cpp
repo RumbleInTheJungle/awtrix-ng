@@ -392,6 +392,7 @@ void BleHub::releaseUser(Key key, int id, bool tellScript) {
     l->second.secureDiscovery = false;
     l->second.securingDiscovery = false;
     l->second.exchangeMtu = true;
+    l->second.technicTiming = false;
     retire(l->second, "disconnected");
     l->second.subscribers.clear();
     l->second.ready = true;

@@ -93,6 +93,12 @@ class FakeRadio : public BleRadio {
     return it == levels.end() ? 1 : it->second;
   }
   bool deferSecurity = false;
+  bool requestTechnicTiming(int link) override {
+    timingRequests.push_back(link);
+    return timingSupported;
+  }
+  std::vector<int> timingRequests;
+  bool timingSupported = true;
   Address peer(int link) const override {
     auto it = peers.find(link);
     return it == peers.end() ? Address() : it->second;

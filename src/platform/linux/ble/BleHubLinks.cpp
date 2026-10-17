@@ -15,13 +15,19 @@ std::string BleHub::connect(const Key& key, const std::string& args) {
   Address peer;
   if (!parseAddress(args, peer)) return error("bad address");
   const bool secure = api::memberFlag(args, "secure");
+  const bool technicTiming = api::memberFlag(args, "technicTiming");
   const bool exchangeMtu = !api::present(api::memberValue(args, "exchangeMtu")) || api::memberFlag(args, "exchangeMtu");
   // One link per peer, whoever opened it: a watch that connects back to us by itself is read
   // over the link it made, as a second connection to it would be refused.
   for (auto& [id, link] : links_) {
     if (link.peer.b != peer.b) continue;
     link.secureDiscovery = link.secureDiscovery || secure;
-    if (!link.client) link.exchangeMtu = link.exchangeMtu && exchangeMtu;
+    if (!link.client) {
+      link.technicTiming = link.technicTiming || technicTiming;
+      link.exchangeMtu = link.exchangeMtu && exchangeMtu;
+    } else if (technicTiming && log) {
+      log("ble: link " + std::to_string(id) + " preserving timing of shared GATT client");
+    }
     users_[key] = id;
     if (link.client && link.ready) {
       link.users.insert(key);
@@ -43,6 +49,7 @@ std::string BleHub::connect(const Key& key, const std::string& args) {
   link.outgoing = true;
   link.secureDiscovery = secure;
   link.exchangeMtu = exchangeMtu;
+  link.technicTiming = technicTiming;
   link.waiting.insert(key);
   users_[key] = id;
   return kOk;
@@ -81,6 +88,11 @@ void BleHub::startClient(int id) {
     return;
   }
   if (link.secureDiscovery && log) log("ble: " + link.peer.str() + " encrypted; starting GATT discovery");
+  if (link.technicTiming) {
+    link.technicTiming = false;
+    if (!radio_.requestTechnicTiming(id) && log)
+      log("ble: link " + std::to_string(id) + " Technic timing not queued; continuing discovery");
+  }
   if (!link.exchangeMtu && log) log("ble: " + link.peer.str() + " ATT MTU 23; no local MTU exchange (Technic Hub profile)");
   link.client = std::make_unique<GattClient>([this, id](const Bytes& pdu) { return radio_.send(id, pdu); });
   link.client->onReady = [this, id](bool ready) {
@@ -142,6 +154,7 @@ void BleHub::onAccepted(int id, const Address& peer) {
     link.outgoing = true;
     link.secureDiscovery = links_[pending].secureDiscovery;
     link.exchangeMtu = links_[pending].exchangeMtu;
+    link.technicTiming = links_[pending].technicTiming;
     link.waiting = std::move(links_[pending].waiting);
     links_.erase(pending);
     for (const Key& k : link.waiting) users_[k] = id;
