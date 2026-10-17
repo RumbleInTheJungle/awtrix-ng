@@ -184,6 +184,14 @@ Erwartet werden eine Meldung zur lokalen BLE-Identität und bei einer frischen
 Kopplung zusätzlich ausgehende SMP-Typen 8 und 9. Erst eingehende
 Benachrichtigungen bestätigen eine nutzbare Eingabeverbindung.
 
+Der erste Privacy-Versuch mit Firmware `d9d7a12` aktivierte Privacy erfolgreich,
+scheiterte aber vor einer Verbindung: `HCI 0x200b refused (status 0x12)` und
+`Invalid argument`. Er prüfte deshalb noch keinen neuen SMP-Identitätsaustausch.
+Der folgende Diagnosebuild protokolliert begrenzt die tatsächlich gesendeten
+Scanparameter. Damit lässt sich erkennen, ob der eigene Scan oder der
+Verbindungsscan des Kernels einen anderen Adresstyp oder Filter verwendet.
+Privacy und Verbindungsparameter bleiben dabei unverändert. Script 1.4 genügt.
+
 ## Was das Ergebnis aussagt
 
 - `START` protokolliert die gewählten Einstellungen. `Abonnement angefragt`

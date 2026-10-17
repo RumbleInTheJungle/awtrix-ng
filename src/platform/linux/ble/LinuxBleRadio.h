@@ -153,6 +153,7 @@ class LinuxBleRadio : public BleRadio {
   };
   std::map<uint16_t, MonitorStats> monitorStats_;
   unsigned monitorDropped_ = 0;
+  unsigned monitorCommands_ = 0;
   uint16_t index_ = 0;
   Address address_;
   std::string name_ = "AWTRIX";

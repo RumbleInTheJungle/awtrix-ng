@@ -187,6 +187,17 @@ as proof that the controller sent no input. At most sixteen handles are tracked 
 processes at most thirty-two monitor records. No monitor capture is written to disk and no
 pairing keys or input payloads are logged.
 
+The monitor also logs up to eight outgoing scan-parameter, create-connection and random-address
+commands per monitor session. Scan logs expose the scan type, interval/window in 0.625 ms units,
+own-address type and filter policy. Connection logs expose only the own-address type, filter
+policy and peer-address type. Random-address commands log their occurrence without the value.
+These include commands issued by the kernel as well as the application's raw HCI socket, so a
+rejected `0x200b` can be compared with the actual parameters. Own-address type 0 is public and
+1 is random. Scan filter policies 2 and 3 use extended directed-advertisement handling, unlike
+the application's policy 0. Linux 4.9 can select these policies when privacy is enabled and the
+adapter advertises extended scan-policy support. A refusal alone does not establish that this
+feature is the cause. Other HCI commands, including encryption payloads, are not decoded here.
+
 For SMP on L2CAP CID 6, the monitor counts sent and received packets separately and records the
 set of opcodes observed in each direction. Up to four request, response or failure messages per
 handle log their non-secret fields: I/O capability, OOB flag, authentication flags, maximum key

@@ -432,6 +432,60 @@ void hciMonitorReceivesOnlyIncomingAttMetadata() {
   }), "malformed monitor records are counted rather than decoded");
 }
 
+void hciMonitorShowsScanParametersWithoutAddresses() {
+  Fixture fixture(3, "4.9.84", 0, true);
+  const auto send = [&](const Bytes& packet) {
+    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
+    fixture.dispatch(fixture.sockets.monitor, POLLIN);
+  };
+  const auto command = [](uint16_t opcode, const Bytes& params, uint16_t index = 0) {
+    Bytes packet;
+    appendWord(packet, 2);
+    appendWord(packet, index);
+    appendWord(packet, static_cast<uint16_t>(3 + params.size()));
+    appendWord(packet, opcode);
+    packet.push_back(static_cast<uint8_t>(params.size()));
+    packet.insert(packet.end(), params.begin(), params.end());
+    return packet;
+  };
+  send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
+  send(command(0x200b, {0, 96, 0, 48, 0, 1, 2}));
+  Bytes create(25, 0xa5);
+  create[4] = 0;
+  create[5] = 0;
+  create[12] = 1;
+  send(command(0x200d, create));
+  send(command(0x2005, Bytes(6, 0xa5)));
+  send(command(0x2019, Bytes(28, 0xa5)));
+  send(command(0x200b, {1, 1, 0, 1, 0, 9, 9}, 1));
+  send({2, 0, 0, 0, 2, 0, 0x0b, 0x20});
+  auto truncated = command(0x200b, {1, 2});
+  truncated[8] = 7;
+  send(truncated);
+  for (int i = 0; i < 10; ++i) send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
+  const auto count = [&](const std::string& part) {
+    return std::count_if(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+      return line.find(part) != std::string::npos;
+    });
+  };
+  check(count("scan params: type=0 interval=96 window=48 own=1 filter=2") == 1,
+        "monitor exposes kernel scan address and filter policy as well as raw application commands");
+  check(count("create connection: own=1 filter=0 peer_type=0") == 1,
+        "connection diagnostics read address types at the correct HCI offsets without addresses");
+  check(count("set random address (value omitted)") == 1,
+        "random address configuration is visible without its value");
+  check(count("HCI TX scan params") == 6 && count("own=9") == 0,
+        "scan diagnostics have a per-monitor budget and ignore other adapters");
+  check(count("a5a5") == 0 && count("A5A5") == 0 && count("0x2019") == 0,
+        "HCI address bytes and encryption command payloads never appear in logs");
+  fixture.radio->power(false);
+  check(count("malformed/truncated/over-limit records 2") == 1,
+        "truncated HCI command records are counted and not decoded");
+  fixture.radio->power(true);
+  send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
+  check(count("HCI TX scan params") == 7, "a new monitor session receives a fresh diagnostic budget");
+}
+
 void unavailableHciMonitorDoesNotBlockBluetooth() {
   Fixture fixture(3, "4.9.84", 0, true, true);
   check(fixture.powered && fixture.sockets.monitor < 0, "Bluetooth starts when monitor access is denied");
@@ -1297,6 +1351,7 @@ int main() {
   technicTimingUsesTheSocketHandle();
   pairingMethodMetadataContainsNoKeyMaterial();
   hciMonitorReceivesOnlyIncomingAttMetadata();
+  hciMonitorShowsScanParametersWithoutAddresses();
   hciMonitorPairsWithoutLoggingSecrets();
   unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();

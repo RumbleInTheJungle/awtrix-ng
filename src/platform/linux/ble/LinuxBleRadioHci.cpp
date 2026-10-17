@@ -37,7 +37,8 @@ void LinuxBleRadio::openMonitor() {
     note("ble: HCI input monitor unavailable: " + std::string(std::strerror(error)));
     return;
   }
-  note("ble: HCI monitor enabled (ATT RX/write TX, SMP metadata only)");
+  monitorCommands_ = 0;
+  note("ble: HCI monitor enabled (scan/connect, ATT, SMP metadata only)");
 }
 
 void LinuxBleRadio::summarizeMonitor(uint16_t handle) {
@@ -84,6 +85,28 @@ void LinuxBleRadio::readMonitor() {
       continue;
     }
     const uint16_t direction = le16(packet);
+    if (direction == 2 && le16(packet + 2) == index_) {
+      if (n < 9 || packet[8] != n - 9) {
+        ++monitorDropped_;
+        continue;
+      }
+      if (monitorCommands_ >= 8) continue;
+      const uint16_t command = le16(packet + 6);
+      if (command == 0x200b && packet[8] == 7) {
+        ++monitorCommands_;
+        note("ble: HCI TX scan params: type=" + std::to_string(packet[9]) +
+             " interval=" + std::to_string(le16(packet + 10)) + " window=" + std::to_string(le16(packet + 12)) +
+             " own=" + std::to_string(packet[14]) + " filter=" + std::to_string(packet[15]));
+      } else if (command == 0x200d && packet[8] == 25) {
+        ++monitorCommands_;
+        note("ble: HCI TX create connection: own=" + std::to_string(packet[21]) +
+             " filter=" + std::to_string(packet[13]) + " peer_type=" + std::to_string(packet[14]));
+      } else if (command == 0x2005 && packet[8] == 6) {
+        ++monitorCommands_;
+        note("ble: HCI TX set random address (value omitted)");
+      }
+      continue;
+    }
     const bool incoming = direction == 5;
     if ((!incoming && direction != 4) || le16(packet + 2) != index_) continue;
     if (n < 10 || le16(packet + 8) != n - 10) {
