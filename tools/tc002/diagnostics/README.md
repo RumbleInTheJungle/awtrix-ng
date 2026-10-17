@@ -192,6 +192,31 @@ Scanparameter. Damit lässt sich erkennen, ob der eigene Scan oder der
 Verbindungsscan des Kernels einen anderen Adresstyp oder Filter verwendet.
 Privacy und Verbindungsparameter bleiben dabei unverändert. Script 1.4 genügt.
 
+### Erster bestätigter Eingabeempfang
+
+Mit Firmware `effaf28` scheiterte der erste Scriptstart erneut vor der Verbindung.
+Der eigene aktive Scan verwendete `own=0 filter=0`. Danach zeigte der Monitor
+einen passiven Scan mit `own=1 filter=3`, den der Chip mit Status `0x12` ablehnte.
+Beim zweiten Scriptstart meldete der Monitor `create connection: own=1 filter=0`.
+Die Verbindung gelang und die SMP-Aushandlung änderte sich auf Anfrage `dist=7/7`
+und Antwort `dist=3/3`. Identitätsverteilung wurde damit in beiden Richtungen
+vereinbart. Der Auszug enthält noch keine abschließende SMP-Zusammenfassung.
+
+Der Controller hörte laut Rückmeldung auf zu blinken. HCI-Monitor und ATT-Socket
+empfingen 16-Byte-Benachrichtigungen an Handle 30. Nach dem Abonnieren meldete
+das Berry-Script `NOTIFY 1` bis `NOTIFY 5`. Die ersten Benachrichtigungen kamen
+schon während des Lesens der Report-Map, vor Exit Suspend und vor dem neuen
+CCCD-Schreibzugriff dieses Laufs. `0 subscriber(s)` bei diesen frühen Werten
+bezeichnet noch fehlende Script-Abonnenten und widerspricht dem Empfang nicht.
+
+Das bestätigt erstmals den Eingabeempfang auf der TC002, aber noch keine
+korrekte Tastendekodierung, Wiederverbindung oder dauerhaft zuverlässige
+Verbindungsherstellung. Der anfängliche Scanfehler bleibt offen. Als nächster
+Hardware-Test folgt das normale Gamepad-Modul auf demselben Build: Diagnose
+beenden lassen und entfernen, den BLE-Bond behalten und unter
+**System → Gamepad → Pair** verbinden. Vor Änderungen am Verbindungsablauf
+diesen funktionierenden Vergleich festhalten.
+
 ## Was das Ergebnis aussagt
 
 - `START` protokolliert die gewählten Einstellungen. `Abonnement angefragt`
