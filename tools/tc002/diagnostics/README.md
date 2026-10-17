@@ -30,8 +30,32 @@ Sie macht den Controller dabei nicht als Spieler in AWTRIX verfügbar.
    steht der Grund hinter `XBD: ENDE`.
 
 Das alte Bond-Löschscript muss für diese Versuche nicht ausgeführt werden.
-Diese Diagnose löscht selbst keine Bonds und startet keine automatische
+Diese Diagnose löscht in der Vorgabe keine Bonds und startet keine automatische
 Wiederholung. Ein Aus- und Einschalten der Uhr ist normalerweise nicht nötig.
+
+### Keine neuen Script-Logs
+
+Die App arbeitet einmal pro Instanz. Deaktivieren und Aktivieren ist kein
+verlässlicher Neustart eines abgeschlossenen Laufs. Den Script-Quelltext im
+Editor erneut speichern oder die App-Einstellungen speichern. Version 1.1
+meldet unmittelbar in `setup()` zuerst `XBD: APP START v1.1`, auch wenn eine
+Einstellung fehlt oder das Gamepad-Modul den Test blockiert. Im Log nach `XBD:`
+suchen und einen eventuell gesetzten Filter entfernen. Fehlt auch diese Meldung,
+den Script-Status im Editor auf einen Lade-/Syntaxfehler prüfen.
+
+### Authentifizierung schlägt fehl
+
+Bei wiederholtem `authentication failed` / `Permission denied` ist eine nicht mehr
+passende gespeicherte Kopplung ein möglicher Grund. Version 1.1 bietet dafür
+**Controller-Kopplung einmal löschen**. Zuerst laufendes Gamepad-Pairing beenden
+und gespeicherte Gamepads entfernen. Den Controller aus-/einschalten und in den
+Pairing-Modus setzen, dann die Option aktivieren und die Einstellungen speichern.
+Die App löscht nur den Bond der eingetragenen Adresse vor ihrem Scan. Sie setzt
+die Option selbst wieder auf aus; andere Geräte bleiben erhalten. Das Log zeigt,
+ob ein Bond vorhanden war und entfernt wurde. Ein Fehler beendet den Versuch.
+Die Einstellung löscht nichts im Controller selbst und garantiert keine erfolgreiche
+Kopplung. Die Firmware zählt in `N bonds` gespeicherte LTK-Einträge, nicht zwingend
+unterschiedliche Geräte.
 
 ## Einstellungen
 
@@ -46,6 +70,7 @@ Wiederholung. Ein Aus- und Einschalten der Uhr ist normalerweise nicht nötig.
 | Pause vor dem Abonnieren | Wartet nach den optionalen Geräteinformationen, bevor der jeweilige Testablauf beginnt. |
 | Beobachtungsdauer | 20–180 Sekunden ab der Abonnement-Anfrage; Vorgabe 60 Sekunden. |
 | Geräteinformationen lesen | Listet zusätzlich verfügbare Hersteller-, Modell-, Firmware- und Softwarewerte auf. Die Werte erscheinen als Hex, damit beliebige Zeichen das Log nicht verfälschen. |
+| Controller-Kopplung einmal löschen | Optionaler gezielter Neustart der Kopplung; setzt sich vor dem Löschversuch wieder auf aus. |
 
 Vor jedem weiteren Versuch den Controller aus- und wieder einschalten, in den
 Pairing-Modus versetzen und die App neu starten. Das erzwingt eine neue

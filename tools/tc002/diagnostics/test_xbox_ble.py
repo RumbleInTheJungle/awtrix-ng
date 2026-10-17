@@ -45,9 +45,15 @@ def clear() end
 def text(a,b,c,d) end
 var store = module('store')
 store.get = def (key) return cfg.find(key) end
+store.set = def (key, value) cfg[key] = value end
 var gamepad = module('gamepad')
 gamepad.state = def (player) return h['pad'] end
 var ble = module('ble')
+ble.bonds = def () return h.find('bonds', []) end
+ble.forget = def (address)
+  h['forgotten'] = address
+  return h['reject'] != 'forget'
+end
 ble.scan = def (cb, opts)
   if h['reject'] == 'scan' return nil end
   h['scan'] = cb
@@ -183,6 +189,28 @@ assert(h['options']['exchangeMtu'] && !h['options']['technicTiming'])
         self.run_case("app.setup()\nlinked()\napp.loop()\nh['notify'](nil,'test failure')\nassert(app.state == 'done')")
         self.run_case("app.setup()\nlinked()\nh['disconnect']('peer closed')\nassert(app.state == 'done')")
         self.run_case("app.setup()\nlinked()\napp.loop()\nh['read'](nil,'no answer')\nassert(app.state == 'listen' && app.next_read == 0)", mode="read_first")
+
+    def test_forget_is_explicit_targeted_and_once(self):
+        self.run_case("h['bonds'] = [cfg['address']]\napp.setup()\nassert(!h.contains('forgotten'))")
+        self.run_case(r'''
+h['bonds'] = ['02:00:00:00:00:02', cfg['address']]
+app.setup()
+assert(h['forgotten'] == cfg['address'] && !cfg['forget_once'])
+assert(app.state == 'scan')
+app.finish('test complete')
+h.remove('forgotten')
+var again = XboxBleDiagnostic()
+again.setup()
+assert(!h.contains('forgotten'))
+''', forget_once=True)
+        self.run_case("app.setup()\nassert(!h.contains('forgotten') && !cfg['forget_once'] && app.state == 'scan')", forget_once=True)
+        self.run_case("h['pad'] = 'pairing'\napp.setup()\nassert(!h.contains('forgotten') && cfg['forget_once'])", forget_once=True)
+        self.run_case("h['bonds'] = [cfg['address']]\nh['reject'] = 'forget'\napp.setup()\nassert(app.state == 'done' && !h.contains('scan'))", forget_once=True)
+
+    def test_failure_cleanup_and_start_marker(self):
+        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.1')", address="")
+        self.run_case("app.setup()\nfound()\nh['connect'](nil,'Permission denied')\nassert(app.state == 'done' && h['disconnects'] == [])")
+        self.run_case("app.setup()\nlinked()\napp.loop()\nh['disconnect']('peer closed')\nassert(app.state == 'done' && h['disconnects'] == [] && h['stops'] == [1])")
 
 
 if __name__ == "__main__":

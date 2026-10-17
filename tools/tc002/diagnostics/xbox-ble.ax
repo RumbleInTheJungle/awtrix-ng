@@ -1,6 +1,6 @@
 # @name Xbox BLE Diagnose
 # @desc Ein begrenzter BLE-Test pro App-Neustart; Ergebnisse stehen im Log
-# @version 1.0
+# @version 1.1
 # @config address text "Controller-Adresse" default="" maxlen=17 help="Bluetooth-Adresse aus deinem Log"
 # @config mode select "Testablauf" default=notify options=notify,read_first,all_reports help="notify: Report 1; read_first: vorher lesen; all_reports: alle HID-Notifications"
 # @config mtu bool "MTU-Austausch" default=false
@@ -8,6 +8,7 @@
 # @config delay number "Pause vor dem Abonnieren" default=0 min=0 max=10000 unit=ms
 # @config duration number "Beobachtungsdauer" default=60 min=20 max=180 unit=s
 # @config info bool "Geräteinformationen lesen" default=true
+# @config forget_once bool "Controller-Kopplung einmal löschen" default=false help="Löscht nur den Bond dieser Adresse vor dem Scan und schaltet sich selbst wieder aus"
 
 import ble
 import gamepad
@@ -56,6 +57,7 @@ class XboxBleDiagnostic
   end
 
   def setup()
+    self.note("APP START v1.1")
     if type(self.address) != "string" || size(self.address) != 17
       self.finish("Controller-Adresse in den App-Einstellungen eintragen")
       return
@@ -69,7 +71,20 @@ class XboxBleDiagnostic
       self.finish("Gamepad-Modul aktiv; Pairing beenden und gespeicherte Gamepads entfernen")
       return
     end
-    self.note("START v1 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
+    if store.get("forget_once") == true
+      store.set("forget_once", false)
+      var bonded = false
+      for address : ble.bonds()
+        if address == self.address bonded = true end
+      end
+      if bonded
+        if !ble.forget(self.address) self.finish("Controller-Bond konnte nicht geloescht werden") return end
+        self.note("Controller-Bond geloescht; neuer Pairing-Versuch")
+      else
+        self.note("Kein gespeicherter Controller-Bond vorhanden")
+      end
+    end
+    self.note("START v1.1 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
     self.note("delay_ms=" + str(self.delay_ms) + " duration_ms=" + str(self.duration_ms) + " info=" + str(self.info))
     self.state = "scan"
     self.deadline = now_ms() + 30000
@@ -84,9 +99,15 @@ class XboxBleDiagnostic
       self.deadline = now_ms() + 45000
       self.conn = ble.connect(device["addr"], def (conn, error)
         if self.state != "connect" return end
-        if error != nil || conn == nil self.finish("Verbindung: " + str(error)) return end
+        if error != nil || conn == nil
+          self.conn = nil
+          self.finish("Verbindung: " + str(error))
+          return
+        end
         self.conn = conn
         ble.on_disconnect(conn, def (reason)
+          self.conn = nil
+          self.subscription = nil
           if self.state != "done" self.finish("Getrennt: " + str(reason)) end
         end)
         self.connected()
