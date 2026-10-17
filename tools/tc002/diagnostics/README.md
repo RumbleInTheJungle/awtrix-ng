@@ -1,278 +1,121 @@
-# Xbox BLE-Diagnose per Berry
+# Xbox BLE diagnostic app
 
-`xbox-ble.ax` ist eine Entwickler-Diagnose für den Branch `fix/xbox-1914` ab
-Commit `25bef86`. Sie läuft auf dem bereits installierten Testbuild. Dafür ist
-kein neues Firmware-Update nötig. Die App verbindet den Controller direkt über
-`import ble`, um den GATT-Ablauf unabhängig vom Gamepad-Modul zu untersuchen.
-Sie macht den Controller dabei nicht als Spieler in AWTRIX verfügbar.
+`xbox-ble.ax` is a developer diagnostic for the Linux BLE backend used by the
+TC002. It connects directly through `import ble`, independently of the normal
+Gamepad module. It does not register a player. Script changes do not require
+another firmware update. The `technicTiming` option requires the backend in
+this branch.
 
-## Erster Versuch
+## Run one test
 
-1. Alte BLE-Testskripte entfernen, insbesondere das Bond-Löschscript `test`.
-   Deaktivieren reicht dafür nicht: `init()` und `setup()` laufen auch beim
-   Laden einer deaktivierten App. Einen noch laufenden Pairing-Versuch unter
-   **System → Gamepad** auslaufen lassen. Gespeicherte Gamepads für diesen
-   isolierten Test dort über **Forget** entfernen. Die Diagnose startet nur,
-   wenn beide Spielerzustände `unpaired` sind. **Pair** während des Tests nicht
-   anklicken.
-2. Den Controller ausschalten, um eine vorhandene Funkverbindung zu beenden.
-3. Unter **Scripts** eine App `xbox-diagnose` anlegen. Den vollständigen Inhalt
-   von [xbox-ble.ax](xbox-ble.ax) einfügen und speichern.
-4. Die App aktivieren. In den App-Einstellungen die Bluetooth-Adresse des
-   Controllers aus dem Log eintragen. Die restlichen Einstellungen zunächst
-   auf den Vorgaben lassen. **Test einmal starten** bleibt vorerst aus.
-   Einstellungen speichern. Die App wartet in `idle` ohne BLE-Aktivität.
-5. Den Controller einschalten und in den Pairing-Modus mit schnellem Blinken
-   setzen. **Test einmal starten** einschalten und die App-Einstellungen
-   speichern. Die Option setzt sich vor dem Versuch selbst wieder auf aus.
-   Der Scan wartet höchstens 30 Sekunden. Das Log in einem zweiten Browser-Tab
-   bereits vor dem Start öffnen und während des Versuchs geöffnet lassen.
-6. Ab der Meldung `XBD: Abonnement angefragt` wiederholt A/B drücken und die
-   Sticks bewegen. Die Uhr zeigt unter `N=` die Zahl eingegangener Werte.
-7. Nach etwa 60 Sekunden Beobachtung endet der Lauf und gibt seine Verbindung
-   frei. Das Log von `XBD: START` bis `XBD: ERGEBNIS` einschließlich der
-   dazwischenliegenden `ble:`-Zeilen sichern. Bei einem vorzeitigen Abbruch
-   steht der Grund hinter `XBD: ENDE`.
+1. Remove old BLE test scripts, especially scripts that delete bonds in `init()`.
+   Loading a disabled app still calls `init()` and `setup()`.
+2. Let active pairing finish and remove saved gamepads under **System → Gamepad**.
+   Both player states must be `unpaired`. Do not press **Pair** during this test.
+3. Create a script app, paste [xbox-ble.ax](xbox-ble.ax), save it and enable the app.
+4. Open the app settings and enter the controller address from your own log.
+   Leave **Test einmal starten** off while saving the initial settings.
+5. Open the clock log in a second browser tab. Turn on the controller and put it
+   in pairing mode, then enable **Test einmal starten** and save the app settings.
+6. Wait for `XBD: Abonnement angefragt`, press A/B and move the sticks. The app
+   shows the notification count as `N=`.
+7. Keep the log open until `XBD: ENDE` and `XBD: ERGEBNIS`. Save the `XBD:` and
+   intervening `ble:` lines outside the checkout. Remove the diagnostic app when
+   finished, before testing **System → Gamepad → Pair** again.
 
-Das alte Bond-Löschscript muss für diese Versuche nicht ausgeführt werden.
-Diese Diagnose löscht in der Vorgabe keine Bonds und startet keine automatische
-Wiederholung. Ein Aus- und Einschalten der Uhr ist normalerweise nicht nötig.
+A start request resets itself before validation. Without a request the app
+stays in `idle`, including after a clock reboot. Enabling an app adds it to the
+rotation but does not restart a finished test. For another run, reopen the
+settings, enable **Test einmal starten** and save. Saving unchanged settings
+is a no-op. Each run scans for at most 30 seconds, bounds connection/setup time
+and releases its own resources on completion or failure.
 
-### Keine neuen Script-Logs
+## Settings
 
-Aktivieren nimmt die App in die Rotation auf, startet aber keinen neuen Test.
-Ab Version 1.2 löst **Test einmal starten → Ein → Speichern** einen Lauf aus.
-Falls die Einstellungen noch den eingeschalteten Schalter anzeigen, den Dialog
-schließen und erneut öffnen. Dann lässt sich die nächste Änderung speichern.
-Ein Speichern ohne geänderte Einstellung löst keinen Neustart aus.
+The German labels match the diagnostic app's settings.
 
-Ein angeforderter Lauf meldet zuerst `XBD: APP START v1.4`, auch wenn eine
-Einstellung fehlt oder das Gamepad-Modul den Test blockiert. Ohne Startauftrag
-bleibt die App still, auch beim Booten. Im Log nach `XBD:` suchen und einen
-eventuell gesetzten Filter entfernen. Fehlt die Startmeldung trotz Startauftrag,
-den Script-Status im Editor auf einen Lade-/Syntaxfehler prüfen.
+| Setting | Default | Effect |
+|---|---|---|
+| Test einmal starten | Off | Requests one run when saved, then resets itself to off. |
+| Controller-Adresse | Empty | Connects only to this address; the address type comes from scanning. |
+| Testablauf | `notify` | `notify`: subscribe to Input Report 1. `read_first`: read a report before subscribing, then take up to five more samples. `all_reports`: subscribe to all HID Report instances that support notifications or indications. |
+| MTU-Austausch | Off | Off uses ATT MTU 23 without a local exchange request. On requests the normal exchange. |
+| Technic-Timing anfordern | On | Requests a 50 ms interval, zero peripheral latency and a 600 ms supervision timeout. |
+| Pause vor dem Abonnieren | 0 ms | Waits after optional setup operations; range 0–10000 ms. |
+| Beobachtungsdauer | 60 s | Observes for 20–180 seconds from the subscription request. |
+| Geräteinformationen lesen | On | Reads available manufacturer, model, firmware and software fields. Logs bounded hex, excluding serial numbers. |
+| HID-Report-Map vorher lesen | Off | Reads `1812` / `2a4b` before input setup and logs only the length. A missing, empty or failed map read ends the test. |
+| HID-Ruhezustand verlassen | Off | Sends one `01` (Exit Suspend) Write Command to `1812` / `2a4c` after the optional map read, before input setup. Requires property `x`. |
+| Controller-Kopplung einmal löschen | Off | Deletes only the selected controller's saved bond before scanning, then resets itself to off. |
 
-**Log löschen** leert nur die Browseransicht. Beim Neuladen erscheinen die auf
-der Uhr gespeicherten Zeilen wieder. Die Uhr hält nur die letzten 34 Zeilen vor.
-Deshalb kann der Anfang eines Versuchs beim nachträglichen Öffnen fehlen.
-Die Diagnose fasst die Dienstliste in einer Zeile zusammen, um Platz zu sparen.
-Während eines Versuchs das Log geöffnet lassen und die Seite nicht neu laden.
+For a comparison, change one option at a time and use a new radio connection.
+Power-cycle the controller and put it in pairing mode before starting again.
+Disabling a timing or MTU request does not undo settings on a shared connection.
 
-### Authentifizierung schlägt fehl
+The report-map option compares the initialization step in
+[Pybricks' Xbox client](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/pybricks/iodevices/pb_type_iodevices_xbox_controller.c).
+The normal AWTRIX gamepad client already reads this map. The Exit Suspend option
+compares the HID Control Point command implemented by
+[BlueZ](https://github.com/bluez/bluez/blob/master/src/shared/hog.c).
+Neither option is an established requirement for every Xbox controller.
+A successful Write Command callback confirms only local sending, not peer
+acknowledgement or a change in the controller's state.
 
-Bei wiederholtem `authentication failed` / `Permission denied` ist eine nicht mehr
-passende gespeicherte Kopplung ein möglicher Grund. Version 1.1 bietet dafür
-**Controller-Kopplung einmal löschen**. Zuerst laufendes Gamepad-Pairing beenden
-und gespeicherte Gamepads entfernen. Den Controller aus-/einschalten und in den
-Pairing-Modus setzen, dann die Option und **Test einmal starten** aktivieren und
-die Einstellungen speichern.
-Die App löscht nur den Bond der eingetragenen Adresse vor ihrem Scan. Sie setzt
-die Option selbst wieder auf aus; andere Geräte bleiben erhalten. Das Log zeigt,
-ob ein Bond vorhanden war und entfernt wurde. Ein Fehler beendet den Versuch.
-Die Einstellung löscht nichts im Controller selbst und garantiert keine erfolgreiche
-Kopplung. Die Firmware zählt in `N bonds` gespeicherte LTK-Einträge, nicht zwingend
-unterschiedliche Geräte.
+## Read the results
 
-## Einstellungen
+- `APP START v1.4` confirms an explicit start request reached `setup()`.
+  It appears even if validation or the active-gamepad guard ends the run.
+- `Abonnement angefragt` confirms a subscription request, not its completion.
+  Check the backend's `notifications ... enabled` line as well.
+- `NOTIFY` counts actual notifications or indications. Only the first five
+  generate individual lines, with their length and no input bytes.
+- `READ` counts explicit read results and reports baseline, changed or unchanged.
+  A read is never counted as a notification. A static readable snapshot does
+  not prove that the controller cannot detect inputs.
+- `ERGEBNIS` summarizes notification, read and changed-sample counts.
+  `reads=0` is expected in `notify` and `all_reports`.
+- `0 subscriber(s)` before the app subscribes means an early input arrived
+  without a registered script callback. Later `NOTIFY` lines establish delivery.
 
-| Einstellung | Wirkung |
-|---|---|
-| Test einmal starten | Startet beim Speichern genau einen Lauf. Setzt sich vor der Prüfung der Einstellungen wieder auf aus. |
-| Controller-Adresse | Verbindet ausschließlich diese Adresse; der Adresstyp kommt aus dem Scan. |
-| `notify` | Abonniert die HID-Report-Characteristics mit Report Reference `0101` (Input Report 1). Liest keine Eingabeproben. |
-| `read_first` | Liest zunächst einen Input Report, abonniert anschließend Report 1 und liest bis zu fünf weitere Proben im Abstand von drei Sekunden. |
-| `all_reports` | Abonniert alle benachrichtigungsfähigen HID-Report-Characteristics (`1812` / `2a4d`) ohne Report-Reference-Filter. Liest keine Eingabeproben. |
-| MTU-Austausch | Aus: ATT MTU 23 ohne lokale MTU-Anfrage. Ein: normaler MTU-Austausch. |
-| Technic-Timing anfordern | Ein: fordert 50 ms Intervall, Latenz 0 und 600 ms Timeout an. Aus: stellt keine Timing-Anfrage. |
-| Pause vor dem Abonnieren | Wartet nach den optionalen Geräteinformationen, bevor der jeweilige Testablauf beginnt. |
-| Beobachtungsdauer | 20–180 Sekunden ab der Abonnement-Anfrage; Vorgabe 60 Sekunden. |
-| Geräteinformationen lesen | Listet zusätzlich verfügbare Hersteller-, Modell-, Firmware- und Softwarewerte auf. Die Werte erscheinen als Hex, damit beliebige Zeichen das Log nicht verfälschen. |
-| HID-Report-Map vorher lesen | Optional: liest `1812` / `2a4b` nach den Geräteinformationen, vor der Pause und vor Eingabeproben oder Abonnement. Protokolliert nur die Länge. Fehler oder ein leeres Ergebnis beenden den Versuch. Vorgabe aus. |
-| HID-Ruhezustand verlassen | Optional: sendet einmal `01` (Exit Suspend) an `1812` / `2a4c`, nach der optionalen Report-Map und vor der Pause. Erfordert die Eigenschaft `x`. Vorgabe aus. |
-| Controller-Kopplung einmal löschen | Optionaler gezielter Neustart der Kopplung; setzt sich vor dem Löschversuch wieder auf aus. |
+`ble.read` selects the first readable `2a4d` instance. Berry does not provide a
+handle or Report Reference filter for this operation, so it is not guaranteed
+to select Report 1 on every device. In `all_reports`, callbacks do not identify
+the source handle. A notification proves that at least one selected instance
+is sending values. The app does not decode buttons or the report map.
 
-Vor jedem weiteren Versuch den Controller aus- und wieder einschalten, in den
-Pairing-Modus versetzen und **Test einmal starten** einschalten und speichern.
-Das erzwingt eine neue
-Funkverbindung. Eine ausgeschaltete Timing-Option setzt bereits ausgehandelte
-Werte auf einer noch bestehenden Verbindung nicht zurück. Bereits vorhandene
-GATT-Clients können außerdem ihre MTU und ihr Timing behalten.
+The script uses the same BLE hub as the normal gamepad client. Its subscriptions
+set `readInitial: false`, so they do not request the hub's diagnostic readback,
+sampling or CCCD Write Command retry. Adapter-wide security and privacy policy
+remain in effect. See [TC002 Bluetooth configuration](../../../docs/developers/tc002/bluetooth.md)
+for those policies, HCI diagnostics and the remaining scan limitation.
 
-Zuerst `notify` testen. Danach jeweils nur den Testablauf zu `read_first` oder
-`all_reports` ändern. MTU, Timing, Geräteinformationen und Pause dabei zunächst
-gleich lassen. Weitere Varianten gezielt nach Auswertung des Logs auswählen.
+## Troubleshooting
 
-### Report-Map mit Pybricks vergleichen
+**No new log lines:** check for a script loading or syntax error, remove log
+filters, and verify that a start request was saved. **Clear log** clears the
+browser view only. Reloading retrieves the clock's retained lines again. The
+clock retains 34 lines, so open the log before starting and keep it visible.
 
-Der [Pybricks-Xbox-Verbindungsablauf](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/pybricks/iodevices/pb_type_iodevices_xbox_controller.c)
-liest die HID-Report-Map vor dem Abonnieren. Der Kommentar beschreibt das Lesen
-als möglicherweise nötig, um den Controller nach dem Koppeln zu aktivieren.
-Die Report-Map beschreibt das Format der Eingaben. Sie enthält keine aktuellen
-Tastenwerte. Der AWTRIX-Gamepad-Code liest sie bereits. Ein fehlendes Lesen
-erklärt deshalb nicht automatisch die bisherigen Fehler im Gamepad-Modul.
+**Authentication failed / Permission denied:** a stale bond is one possible
+cause. End normal gamepad pairing, power-cycle the controller, enter pairing
+mode, enable **Controller-Kopplung einmal löschen** together with the start
+request, then save. The log says whether a bond existed and was deleted. This
+does not erase the controller's own stored keys or guarantee successful pairing.
+The backend's bond count counts LTK records, not necessarily distinct devices.
 
-Für den Vergleich innerhalb des Berry-Scripts **HID-Report-Map vorher lesen**
-einschalten und die übrigen Einstellungen des Vergleichslaufs beibehalten.
-Wurde im Vergleichslauf die Kopplung gelöscht, auch hier die Option einmal
-aktivieren. Erwartet wird `HID-Report-Map: ... Bytes` vor dem ersten `READ`
-oder der Abonnement-Anfrage. Die App dekodiert die Map nicht.
-Das ist ein einzelner Vergleichsschritt, keine vollständige Nachbildung des
-Pybricks-Treibers. Insbesondere bleibt die bisherige CCCD-Schreibweise bestehen.
+**Controller blinks again after a test:** the diagnostic intentionally ends and
+releases its subscription and connection. Test persistent gameplay through the
+normal Gamepad module after removing the diagnostic app.
 
-### HID-Control-Point vergleichen
-
-**HID-Ruhezustand verlassen** sendet einen einzelnen Write Command mit dem
-Wert `01`. [BlueZ verwendet diesen Befehl zum Verlassen des HID-Ruhezustands](https://github.com/bluez/bluez/blob/master/src/shared/hog.c)
-in `bt_hog_set_control_point(hog, false)`. Das ist kein Beleg, dass der
-Xbox-Controller in unseren Versuchen im Ruhezustand ist oder dass BlueZ den
-Befehl bei jeder Verbindung sendet. Das fortgesetzte Blinken allein beweist
-diesen Zustand ebenfalls nicht.
-
-Für einen Vergleich nur diese Option zusätzlich einschalten. Bei Erfolg des
-lokalen Sendepfads erscheint `Exit Suspend 01 lokal gesendet; ohne Peer-Bestaetigung`.
-Ein Write Command hat keine ATT-Antwort. Diese Meldung bestätigt deshalb weder
-die Annahme durch den Controller noch einen Zustandswechsel. Entscheidend sind
-weiterhin echte Benachrichtigungen und das beobachtete Blinkverhalten.
-Fehlt die Characteristic mit der Eigenschaft `x`, scheitert das Senden oder
-bleibt der Callback aus, endet der Versuch. Die App sendet keinen Suspend-Befehl.
-
-### Bisherige Hardware-Ergebnisse
-
-Die Versuche vom 17. Oktober 2026 mit Modell 1914 und Controller-Firmware
-`5.9.2709.0` ergaben in den folgenden Varianten keine Benachrichtigungen:
-
-| Ablauf | MTU-Austausch | Technic-Timing | Report-Map | Leseproben |
-|---|---|---|---|---|
-| `notify` | aus | ein | aus | keine |
-| `read_first` | aus | ein | aus | sechs unverändert |
-| `read_first` | aus | aus | aus | sechs unverändert |
-| `read_first` | ein | aus | aus | sechs unverändert |
-| `read_first` | ein | aus | ein, 283 Bytes | sechs unverändert |
-
-Mit MTU-Austausch blieb die ausgehandelte MTU bei 23. Auch der HCI-Monitor
-zählte keine Benachrichtigungen. Im letzten Lauf blinkte der Controller laut
-Beobachtung während des gesamten Tests. Die Verschlüsselung und GATT-Zugriffe
-funktionierten. Einzelne andere Versuche scheiterten bereits bei der
-Authentifizierung. Diese Ergebnisse legen die Ursache noch nicht fest.
-
-Auch mit zugeschaltetem Exit Suspend ergab `read_first` bei MTU-Austausch ein,
-Timing aus und gelesener Report-Map sechs unveränderte Proben ohne
-Benachrichtigung. Ein weiterer Lauf mit `all_reports`, MTU-Austausch ein,
-Timing ein, Report-Map ein und Exit Suspend ein empfing ebenfalls keine
-Benachrichtigungen. Dort waren null Leseproben erwartet. Eine anschließende
-Bluetooth-Verbindung desselben Controllers mit dem Mac funktionierte laut
-Rückmeldung einwandfrei. Ein erneuter Pybricks-Vergleich war nicht verfügbar.
-
-Diese Berry-Varianten ergaben damit bisher keinen funktionierenden Ablauf.
-Für die weitere Untersuchung ergänzt der nächste Testbuild SMP-Metadaten und
-ausgehende ATT-Schreibheader im HCI-Monitor. Die Scriptversion 1.4 genügt dafür.
-Die Details stehen in der [Bluetooth-Entwicklerdokumentation](../../../docs/developers/tc002/bluetooth.md).
-
-Der Test mit Firmware `a312207` bestätigte die Schreibzugriffe auf den
-HID-Control-Point (Handle 26) und den Benachrichtigungsdeskriptor (Handle 31)
-auch im HCI-Monitor. Bei weiterhin null Benachrichtigungen zeigten die
-SMP-Metadaten eine neue Vergleichsmöglichkeit: Die Uhr bot als Initiator
-`dist=5/7` an, der Controller antwortete mit `dist=1/3`. Die Uhr sendete
-SMP-Typen `1,3,4,6,7`, der Controller `2,3,4,6,7,8,9`. Identitätsinformationen
-(Typen 8 und 9) kamen damit nur vom Controller.
-
-Der folgende Testbuild ergänzt eine dauerhaft gespeicherte lokale BLE-Identität
-und aktiviert LE Privacy. Das ist ein adapterweiter Vergleich und kann auch
-andere BLE-Kopplungen betreffen. Für diesen Test Script 1.4 mit denselben
-Einstellungen verwenden und **Controller-Kopplung einmal löschen** einschalten.
-Erwartet werden eine Meldung zur lokalen BLE-Identität und bei einer frischen
-Kopplung zusätzlich ausgehende SMP-Typen 8 und 9. Erst eingehende
-Benachrichtigungen bestätigen eine nutzbare Eingabeverbindung.
-
-Der erste Privacy-Versuch mit Firmware `d9d7a12` aktivierte Privacy erfolgreich,
-scheiterte aber vor einer Verbindung: `HCI 0x200b refused (status 0x12)` und
-`Invalid argument`. Er prüfte deshalb noch keinen neuen SMP-Identitätsaustausch.
-Der folgende Diagnosebuild protokolliert begrenzt die tatsächlich gesendeten
-Scanparameter. Damit lässt sich erkennen, ob der eigene Scan oder der
-Verbindungsscan des Kernels einen anderen Adresstyp oder Filter verwendet.
-Privacy und Verbindungsparameter bleiben dabei unverändert. Script 1.4 genügt.
-
-### Erster bestätigter Eingabeempfang
-
-Mit Firmware `effaf28` scheiterte der erste Scriptstart erneut vor der Verbindung.
-Der eigene aktive Scan verwendete `own=0 filter=0`. Danach zeigte der Monitor
-einen passiven Scan mit `own=1 filter=3`, den der Chip mit Status `0x12` ablehnte.
-Beim zweiten Scriptstart meldete der Monitor `create connection: own=1 filter=0`.
-Die Verbindung gelang und die SMP-Aushandlung änderte sich auf Anfrage `dist=7/7`
-und Antwort `dist=3/3`. Identitätsverteilung wurde damit in beiden Richtungen
-vereinbart. Der Auszug enthält noch keine abschließende SMP-Zusammenfassung.
-
-Der Controller hörte laut Rückmeldung auf zu blinken. HCI-Monitor und ATT-Socket
-empfingen 16-Byte-Benachrichtigungen an Handle 30. Nach dem Abonnieren meldete
-das Berry-Script `NOTIFY 1` bis `NOTIFY 5`. Die ersten Benachrichtigungen kamen
-schon während des Lesens der Report-Map, vor Exit Suspend und vor dem neuen
-CCCD-Schreibzugriff dieses Laufs. `0 subscriber(s)` bei diesen frühen Werten
-bezeichnet noch fehlende Script-Abonnenten und widerspricht dem Empfang nicht.
-
-Dieser Auszug bestätigt den Eingabeempfang auf der TC002. Der vollständige
-Diagnoselauf zählte später 590 Benachrichtigungen. Seine SMP-Zusammenfassung
-enthielt ausgehend `1,3,4,6,7,8,9` und eingehend `2,3,4,6,7,8,9`.
-Identitätsinformationen wurden damit auch tatsächlich in beiden Richtungen
-beobachtet. Die Diagnose gab das Abonnement nach ihrer Beobachtungsdauer frei.
-
-### Bestätigter Test des normalen Gamepad-Moduls
-
-Auf demselben Build `1.2.2-geffaf28b66d2-0f4dfe7fd1ac` meldete das normale
-Gamepad-Modul anschließend `Xbox Wireless Controller ready`. Die Weboberfläche
-zeigte den Controller als verbundenen Player 1. Am 17. Oktober 2026 bestätigte
-der Tester mit TC002 und Xbox-Modell 1914 (Controller-Firmware `5.9.2709.0`):
-
-- Tasten und Sticks funktionieren in einer Gamepad-fähigen App.
-- Nach Aus-/Einschalten verbindet sich der Controller ohne erneutes Pair oder
-  Forget wieder.
-- Die Wiederverbindung funktioniert auch nach einem Neustart der Uhr.
-
-Die lokale Identität mit Privacy ist damit Teil eines funktionierenden
-Hardware-Stands. Welche der übrigen experimentellen Einstellungen entfallen
-können, ist nicht einzeln geprüft. Der anfängliche Kernel-Scan mit Filter 2
-oder 3 wurde weiterhin mit `0x12` abgelehnt, bevor ein späterer Versuch mit
-Filter 0 erfolgreich verband. Diesen verbleibenden Fehler und weitere
-Bereinigungen gegen den funktionierenden Build vergleichen.
-
-## Was das Ergebnis aussagt
-
-- `START` protokolliert die gewählten Einstellungen. `Abonnement angefragt`
-  bestätigt noch keine erfolgreiche Deskriptor-Konfiguration. Dafür die
-  `ble: ... notifications ... enabled`-Zeile beachten.
-- `NOTIFY` zählt gelieferte Benachrichtigungen bzw. Indikationen. Nur die ersten
-  fünf Werte erzeugen Einzelmeldungen, jeweils mit Länge und ohne Eingabebytes.
-  `ERGEBNIS notifications=...` enthält die Gesamtzahl des Laufs.
-- `READ` zählt gelesene Proben und unterscheidet Baseline, unverändert und
-  geändert. Eine gelesene Probe wird niemals als Benachrichtigung gezählt.
-- Bei mehreren lesbaren `2a4d`-Characteristics wählt `ble.read` die erste
-  lesbare Instanz. Berry erlaubt hier keine Auswahl per Handle oder Report
-  Reference. Der erste gelesene Report muss deshalb nicht zwingend Report 1 sein.
-- Bei `all_reports` enthält der Callback keinen Ursprungshandle. Ein Empfang
-  beweist daher zunächst nur, dass mindestens eine der abonnierten Instanzen
-  Werte liefert.
-- Die App liest die Report-Map nur mit der entsprechenden Option und dekodiert
-  keine Tasten. Sie nutzt denselben
-  BLE-Hub wie das Gamepad-Modul, aber eine eigene Abfolge. Die internen
-  `readInitial`-Diagnoseproben und der automatische CCCD-Write-Command-Versuch
-  bleiben für ihre Abonnements aus. So können wir zuerst das normale Abonnieren
-  allein prüfen.
-- Die bestehende Adapter-Konfiguration, insbesondere Legacy Pairing, bleibt
-  bestehen. HCI-Kommandos, AIC-Energiespareinstellungen und beliebige Deskriptoren
-  können mit dieser App nicht geändert werden.
-
-Wenn die Diagnose beendet ist, die App entfernen. Danach kann wieder über
-**System → Gamepad → Pair** getestet werden.
-
-## Lokale Prüfung
+## Local verification
 
 ```sh
 python3 tools/tc002/diagnostics/test_xbox_ble.py
 ```
 
-Benötigt Python 3 und `cc`. Der Test baut den vorhandenen Berry-Interpreter in
-einem temporären Verzeichnis und führt die App mit simulierten BLE-Callbacks
-aus. Geprüft werden die drei Abläufe, Geräteinformationen, Optionen, Wartezeit,
-Zeitlimits, Ablehnungen, Trennungen, späte Callbacks, der ausdrückliche Start,
-das stille Laden ohne Startauftrag, die optionale Report-Map und Exit Suspend
-mit Fehler- und Timeout-Pfaden und die Sperre bei aktivem
-Gamepad-Modul. Das ersetzt keinen Test mit der Uhr und dem Controller.
+Requires Python 3 and `cc`. The test compiles the vendored Berry interpreter in
+a temporary directory and runs the app with simulated BLE callbacks. It covers
+the modes, explicit-start gate, optional setup operations, errors, timeouts,
+late callbacks, targeted bond removal and cleanup. It does not exercise the
+TC002 scheduler or a physical Bluetooth controller. CI runs this test in the
+Linux job.
