@@ -59,6 +59,15 @@ uses a workaround only on kernels whose release starts with `4.9.`:
 HCI command failures include the opcode and status in the BLE log. This addresses
 the kernel guards without changing controller connection limits or the AON block.
 
+With gamepad diagnostics enabled, ordinary and enhanced LE Connection Complete events log the
+HCI handle, local central/peripheral role, connection interval in milliseconds, peripheral
+latency in connection events and supervision timeout in milliseconds. LE Connection Update
+Complete logs the applied values on success or only the status on failure. LE Remote Connection
+Parameter Request logs the requested interval range, latency and timeout. These are observations
+on the existing raw HCI socket; they send no parameter commands or replies. Only events delivered
+by the kernel are visible. Absence of a request log does not exclude negotiation through L2CAP
+or inside the controller. The legacy-pairing and MTU test settings remain in effect.
+
 ## Two-controller gamepad registry
 
 Gamepad sessions connect with `secure: true`. Before starting GATT discovery, the hub waits for

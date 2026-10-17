@@ -263,6 +263,49 @@ struct Fixture {
   }
 };
 
+void connectionParameterDiagnostics() {
+  Fixture fixture(3, "4.9.84", 0, true);
+  const auto send = [&](const Bytes& packet) {
+    fixture.sockets.sendTo(fixture.sockets.scanner, packet);
+    fixture.dispatch(fixture.sockets.scanner, POLLIN);
+  };
+  const auto logged = [&](const std::string& value) {
+    return std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+      return line.find(value) != std::string::npos;
+    });
+  };
+  const auto commands = fixture.sockets.rawCommands.size();
+  for (bool enhanced : {false, true}) {
+    Bytes packet{4, 0x3e, static_cast<uint8_t>(enhanced ? 31 : 19),
+                 static_cast<uint8_t>(enhanced ? 0x0a : 1), 0, 18, 0,
+                 static_cast<uint8_t>(enhanced ? 1 : 0), 0};
+    packet.resize(enhanced ? 27 : 15, 0);
+    appendWord(packet, 7);
+    appendWord(packet, 2);
+    appendWord(packet, 300);
+    packet.push_back(0);
+    send(packet);
+  }
+  check(logged("local role central, interval 8.75 ms, latency 2 events, supervision timeout 3000 ms") &&
+        logged("local role peripheral, interval 8.75 ms, latency 2 events, supervision timeout 3000 ms"),
+        "ordinary and enhanced connection events decode role, offsets and units");
+  send({4, 0x3e, 10, 3, 0, 18, 0, 40, 0, 0, 0, 60, 0});
+  check(logged("connection updated: interval 50.00 ms, latency 0 events, supervision timeout 600 ms"),
+        "successful update reports the applied parameters");
+  send({4, 0x3e, 10, 3, 0x1e, 18, 0, 0xff, 0xff, 0xff, 0xff, 0xff, 0xff});
+  check(logged("connection update failed (status 0x1e)") && !logged("81918.75"),
+        "failed update does not report undefined parameter fields");
+  send({4, 0x3e, 11, 6, 18, 0, 7, 0, 9, 0, 0, 0, 44, 1});
+  check(logged("remote parameter request: interval 8.75..11.25 ms, latency 0 events, supervision timeout 3000 ms"),
+        "remote requests report the requested interval range");
+  const auto count = fixture.logs.size();
+  send({4, 0x3e, 10, 3, 0, 18, 0});
+  send({4, 0x3e, 4, 6, 18, 0, 0});
+  send({4, 0x3e, 1, 0x0a});
+  check(fixture.logs.size() == count, "truncated parameter events are ignored");
+  check(fixture.sockets.rawCommands.size() == commands, "parameter diagnostics send no HCI commands");
+}
+
 void pairingMethodMetadataContainsNoKeyMaterial() {
   Fixture fixture;
   int management = -1;
@@ -1104,6 +1147,7 @@ int main() {
   unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();
+  connectionParameterDiagnostics();
   outgoingConnectionsAreQueued();
   cancelledQueuedConnectionDoesNotTouchTheActiveOne();
   newConnectionsCannotOvertakeTheQueue();

@@ -246,8 +246,43 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
     if (op == 0x0406 && status == 0x02 && cancel_ && cancel_->handle) finishCancel();
     return;
   }
-  if (p[1] != 0x3e || p[2] < 19 || (p[3] != 0x01 && p[3] != 0x0a)) return;
+  if (p[1] != 0x3e || p[2] < 1) return;
+  if (p[3] == 0x03 && p[2] >= 10) {
+    if (options_.monitorInput) {
+      char text[192];
+      if (p[4]) {
+        std::snprintf(text, sizeof text, "ble: HCI handle %u connection update failed (status 0x%02x)",
+                      le16(p + 5), p[4]);
+      } else {
+        std::snprintf(text, sizeof text,
+                      "ble: HCI handle %u connection updated: interval %.2f ms, latency %u events, supervision timeout %u ms",
+                      le16(p + 5), le16(p + 7) * 1.25, le16(p + 9), le16(p + 11) * 10);
+      }
+      note(text);
+    }
+    return;
+  }
+  if (p[3] == 0x06 && p[2] >= 11) {
+    if (options_.monitorInput) {
+      char text[192];
+      std::snprintf(text, sizeof text,
+                    "ble: HCI handle %u remote parameter request: interval %.2f..%.2f ms, latency %u events, supervision timeout %u ms",
+                    le16(p + 4), le16(p + 6) * 1.25, le16(p + 8) * 1.25, le16(p + 10), le16(p + 12) * 10);
+      note(text);
+    }
+    return;
+  }
+  if ((p[3] != 0x01 && p[3] != 0x0a) || p[2] < (p[3] == 0x0a ? 31 : 19)) return;
   status = p[4];
+  if (!status && options_.monitorInput) {
+    const uint8_t* params = p + (p[3] == 0x0a ? 27 : 15);
+    char text[224];
+    std::snprintf(text, sizeof text,
+                  "ble: HCI handle %u connected: local role %s, interval %.2f ms, latency %u events, supervision timeout %u ms",
+                  le16(p + 5), p[7] == 0 ? "central" : "peripheral", le16(params) * 1.25,
+                  le16(params + 2), le16(params + 4) * 10);
+    note(text);
+  }
   if (!status) peripheralHandles_[le16(p + 5)] = p[7] != 0;
   if (!status && p[7] != 0) return;
   if (cancel_) {
