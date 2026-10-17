@@ -1,0 +1,237 @@
+# @name Xbox BLE Diagnose
+# @desc Ein begrenzter BLE-Test pro App-Neustart; Ergebnisse stehen im Log
+# @version 1.0
+# @config address text "Controller-Adresse" default="" maxlen=17 help="Bluetooth-Adresse aus deinem Log"
+# @config mode select "Testablauf" default=notify options=notify,read_first,all_reports help="notify: Report 1; read_first: vorher lesen; all_reports: alle HID-Notifications"
+# @config mtu bool "MTU-Austausch" default=false
+# @config timing bool "Technic-Timing anfordern" default=true help="Benötigt Testbuild 25bef86 oder neuer; 50 ms / 0 / 600 ms"
+# @config delay number "Pause vor dem Abonnieren" default=0 min=0 max=10000 unit=ms
+# @config duration number "Beobachtungsdauer" default=60 min=20 max=180 unit=s
+# @config info bool "Geräteinformationen lesen" default=true
+
+import ble
+import gamepad
+import string
+
+class XboxBleDiagnostic
+  var state, scan, conn, subscription, deadline, action_at
+  var address, mode, mtu, timing, delay_ms, duration_ms, info
+  var services, notifications, samples, previous, changed, next_read, reading
+
+  def init()
+    self.state = "start"
+    self.scan = nil
+    self.conn = nil
+    self.subscription = nil
+    self.deadline = 0
+    self.action_at = 0
+    self.services = []
+    self.notifications = 0
+    self.samples = 0
+    self.changed = 0
+    self.previous = nil
+    self.next_read = 0
+    self.reading = false
+    self.address = store.get("address")
+    self.mode = store.get("mode")
+    self.mtu = store.get("mtu") == true
+    self.timing = store.get("timing") == true
+    self.info = store.get("info") == true
+    var pause = store.get("delay")
+    var duration = store.get("duration")
+    self.delay_ms = type(pause) == "int" ? pause : 0
+    self.duration_ms = (type(duration) == "int" ? duration : 60) * 1000
+    if self.delay_ms < 0 self.delay_ms = 0 end
+    if self.delay_ms > 10000 self.delay_ms = 10000 end
+    if self.duration_ms < 20000 self.duration_ms = 20000 end
+    if self.duration_ms > 180000 self.duration_ms = 180000 end
+  end
+
+  def note(message)
+    log("XBD: " + message)
+  end
+
+  def manager_idle()
+    return gamepad.state(1) == "unpaired" && gamepad.state(2) == "unpaired"
+  end
+
+  def setup()
+    if type(self.address) != "string" || size(self.address) != 17
+      self.finish("Controller-Adresse in den App-Einstellungen eintragen")
+      return
+    end
+    self.address = string.toupper(self.address)
+    if self.mode != "notify" && self.mode != "read_first" && self.mode != "all_reports"
+      self.finish("Ungueltiger Testablauf")
+      return
+    end
+    if !self.manager_idle()
+      self.finish("Gamepad-Modul aktiv; Pairing beenden und gespeicherte Gamepads entfernen")
+      return
+    end
+    self.note("START v1 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
+    self.note("delay_ms=" + str(self.delay_ms) + " duration_ms=" + str(self.duration_ms) + " info=" + str(self.info))
+    self.state = "scan"
+    self.deadline = now_ms() + 30000
+    self.scan = ble.scan(def (device, err)
+      if self.state != "scan" return end
+      if err != nil self.finish("Scan: " + str(err)) return end
+      if device == nil || device["addr"] != self.address return end
+      self.state = "connect"
+      ble.stop(self.scan)
+      self.scan = nil
+      self.note("Gefunden; random=" + str(device["random"]) + " RSSI=" + str(device["rssi"]))
+      self.deadline = now_ms() + 45000
+      self.conn = ble.connect(device["addr"], def (conn, error)
+        if self.state != "connect" return end
+        if error != nil || conn == nil self.finish("Verbindung: " + str(error)) return end
+        self.conn = conn
+        ble.on_disconnect(conn, def (reason)
+          if self.state != "done" self.finish("Getrennt: " + str(reason)) end
+        end)
+        self.connected()
+      end, {"random": device["random"], "secure": true,
+            "exchangeMtu": self.mtu, "technicTiming": self.timing})
+      if self.conn == nil self.finish("Verbindungsanfrage abgelehnt") end
+    end, {"addr": self.address, "active": true, "dedupe": 0})
+    if self.scan == nil self.finish("Scan-Anfrage abgelehnt") end
+  end
+
+  def has(service, characteristic, property)
+    for svc : self.services
+      if svc["uuid"] == service
+        for chr : svc["chars"]
+          if chr["uuid"] == characteristic && string.find(chr["props"], property) >= 0 return true end
+        end
+      end
+    end
+    return false
+  end
+
+  def connected()
+    self.state = "info"
+    self.deadline = now_ms() + 60000
+    self.note("Verbunden; verschluesselte GATT-Erkennung abgeschlossen")
+    self.services = ble.services(self.conn)
+    if self.services == nil self.finish("Dienstliste fehlt") return end
+    for svc : self.services
+      self.note("Dienst " + svc["uuid"])
+      for chr : svc["chars"]
+        self.note("  Wert " + chr["uuid"] + " props=" + chr["props"])
+      end
+    end
+    self.read_info(0)
+  end
+
+  def read_info(index)
+    if self.state != "info" return end
+    # Standard Device Information fields only, never serial numbers or bond keys.
+    var fields = [["2a29", "Hersteller"], ["2a24", "Modell"], ["2a26", "Firmware"], ["2a28", "Software"]]
+    if !self.info || index >= size(fields)
+      self.before_subscription()
+      return
+    end
+    var field = fields[index]
+    if !self.has("180a", field[0], "r")
+      self.note(field[1] + ": nicht angeboten")
+      self.read_info(index + 1)
+      return
+    end
+    var request = ble.read(self.conn, "180a", field[0], def (data, err)
+      if self.state != "info" return end
+      if err != nil
+        self.note(field[1] + ": " + str(err))
+      else
+        # Hex preserves arbitrary bytes without inserting control characters in logs.
+        var value = data.tohex()
+        self.note(field[1] + " hex=" + (size(value) > 48 ? value[0..47] + "..." : value))
+      end
+      self.read_info(index + 1)
+    end)
+    if request == nil self.finish("Geraeteinfo-Anfrage abgelehnt") end
+  end
+
+  def before_subscription()
+    self.state = "pause"
+    self.action_at = now_ms() + self.delay_ms
+    self.deadline = self.action_at + 15000
+  end
+
+  def sample(first)
+    self.reading = true
+    var request = ble.read(self.conn, "1812", "2a4d", def (data, err)
+      if self.state == "done" return end
+      self.reading = false
+      if err != nil
+        self.note("Report lesen: " + str(err))
+        self.next_read = 0
+      else
+        self.samples += 1
+        var value = data.tohex()
+        var label = self.previous == nil ? "baseline" : value == self.previous ? "unveraendert" : "geaendert"
+        if label == "geaendert" self.changed += 1 end
+        self.previous = value
+        self.note("READ " + str(self.samples) + ": " + str(size(data)) + " Bytes, " + label)
+        self.next_read = self.samples < 6 ? now_ms() + 3000 : 0
+      end
+      if first self.subscribe() end
+    end)
+    if request == nil self.finish("Report-Leseanfrage abgelehnt") end
+  end
+
+  def subscribe()
+    if self.state == "done" return end
+    self.state = "listen"
+    self.deadline = now_ms() + self.duration_ms
+    var options = {"interval": 0, "readInitial": false}
+    if self.mode != "all_reports" options["desc"] = {"2908": "0101"} end
+    self.subscription = ble.subscribe(self.conn, "1812", "2a4d", def (data, err)
+      if self.state != "listen" return end
+      if err != nil self.finish("Abonnement: " + str(err)) return end
+      self.notifications += 1
+      if self.notifications <= 5
+        self.note("NOTIFY " + str(self.notifications) + ": " + str(size(data)) + " Bytes")
+      end
+    end, options)
+    if self.subscription == nil self.finish("Abonnement-Anfrage abgelehnt") return end
+    self.note("Abonnement angefragt; jetzt A/B druecken und Sticks bewegen")
+  end
+
+  def loop()
+    if self.state == "done" return end
+    if !self.manager_idle() self.finish("Abbruch: Gamepad-Modul wurde aktiv") return end
+    var now = now_ms()
+    if self.deadline > 0 && now >= self.deadline
+      self.finish(self.state == "listen" ? "Beobachtung beendet" : "Timeout in " + self.state)
+      return
+    end
+    if self.state == "pause" && now >= self.action_at
+      if self.mode == "read_first"
+        self.state = "read"
+        self.sample(true)
+      else
+        self.subscribe()
+      end
+    elif self.state == "listen" && self.next_read > 0 && now >= self.next_read && !self.reading
+      self.sample(false)
+    end
+  end
+
+  def finish(reason)
+    if self.state == "done" return end
+    self.state = "done"
+    self.note("ENDE: " + reason)
+    self.note("ERGEBNIS notifications=" + str(self.notifications) + " reads=" + str(self.samples) + " changed=" + str(self.changed))
+    if self.scan != nil ble.stop(self.scan) self.scan = nil end
+    if self.subscription != nil ble.stop(self.subscription) self.subscription = nil end
+    if self.conn != nil ble.disconnect(self.conn) self.conn = nil end
+  end
+
+  def draw()
+    clear()
+    text(0, 6, "XB " + self.state, 0x00A0FF)
+    text(0, 14, "N=" + str(self.notifications), self.notifications > 0 ? 0x00FF00 : 0xFF8800)
+  end
+end
+
+return XboxBleDiagnostic()
