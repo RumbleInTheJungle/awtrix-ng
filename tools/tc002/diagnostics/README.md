@@ -209,13 +209,30 @@ schon während des Lesens der Report-Map, vor Exit Suspend und vor dem neuen
 CCCD-Schreibzugriff dieses Laufs. `0 subscriber(s)` bei diesen frühen Werten
 bezeichnet noch fehlende Script-Abonnenten und widerspricht dem Empfang nicht.
 
-Das bestätigt erstmals den Eingabeempfang auf der TC002, aber noch keine
-korrekte Tastendekodierung, Wiederverbindung oder dauerhaft zuverlässige
-Verbindungsherstellung. Der anfängliche Scanfehler bleibt offen. Als nächster
-Hardware-Test folgt das normale Gamepad-Modul auf demselben Build: Diagnose
-beenden lassen und entfernen, den BLE-Bond behalten und unter
-**System → Gamepad → Pair** verbinden. Vor Änderungen am Verbindungsablauf
-diesen funktionierenden Vergleich festhalten.
+Dieser Auszug bestätigt den Eingabeempfang auf der TC002. Der vollständige
+Diagnoselauf zählte später 590 Benachrichtigungen. Seine SMP-Zusammenfassung
+enthielt ausgehend `1,3,4,6,7,8,9` und eingehend `2,3,4,6,7,8,9`.
+Identitätsinformationen wurden damit auch tatsächlich in beiden Richtungen
+beobachtet. Die Diagnose gab das Abonnement nach ihrer Beobachtungsdauer frei.
+
+### Bestätigter Test des normalen Gamepad-Moduls
+
+Auf demselben Build `1.2.2-geffaf28b66d2-0f4dfe7fd1ac` meldete das normale
+Gamepad-Modul anschließend `Xbox Wireless Controller ready`. Die Weboberfläche
+zeigte den Controller als verbundenen Player 1. Am 17. Oktober 2026 bestätigte
+der Tester mit TC002 und Xbox-Modell 1914 (Controller-Firmware `5.9.2709.0`):
+
+- Tasten und Sticks funktionieren in einer Gamepad-fähigen App.
+- Nach Aus-/Einschalten verbindet sich der Controller ohne erneutes Pair oder
+  Forget wieder.
+- Die Wiederverbindung funktioniert auch nach einem Neustart der Uhr.
+
+Die lokale Identität mit Privacy ist damit Teil eines funktionierenden
+Hardware-Stands. Welche der übrigen experimentellen Einstellungen entfallen
+können, ist nicht einzeln geprüft. Der anfängliche Kernel-Scan mit Filter 2
+oder 3 wurde weiterhin mit `0x12` abgelehnt, bevor ein späterer Versuch mit
+Filter 0 erfolgreich verband. Diesen verbleibenden Fehler und weitere
+Bereinigungen gegen den funktionierenden Build vergleichen.
 
 ## Was das Ergebnis aussagt
 
