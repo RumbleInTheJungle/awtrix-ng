@@ -158,14 +158,28 @@ and payload length. This distinguishes socket reception from hub routing without
 payloads.
 
 With gamepad support enabled, the Linux radio also attempts to open a separate HCI monitor
-socket. A failure is logged and does not prevent Bluetooth startup. It inspects only incoming
-ACL records for its controller and logs at most three ATT packet opcodes and three notification
-or indication headers per HCI connection handle. Summaries count ACL records, ATT starts,
-notifications and continuation fragments. Continuations are not reassembled; malformed,
+socket. A failure is logged and does not prevent Bluetooth startup. It inspects ACL records for
+its controller and logs at most three incoming ATT packet opcodes, three notification or
+indication headers and four outgoing ATT write headers per HCI connection handle. Write logs
+contain only the request/command type, attribute handle and L2CAP length, not the written value.
+RX summaries count incoming ACL records, ATT starts, notifications and continuation fragments.
+Continuations are not reassembled; malformed,
 truncated or over-limit records are counted, so incomplete monitor evidence must not be treated
 as proof that the controller sent no input. At most sixteen handles are tracked and each dispatch
 processes at most thirty-two monitor records. No monitor capture is written to disk and no
 pairing keys or input payloads are logged.
+
+For SMP on L2CAP CID 6, the monitor counts sent and received packets separately and records the
+set of opcodes observed in each direction. Up to four request, response or failure messages per
+handle log their non-secret fields: I/O capability, OOB flag, authentication flags, maximum key
+size, initiator/responder key distribution masks, or failure reason. A request/response must fit
+in its first ACL fragment and contain all seven bytes before these fields are inspected. Key
+distribution, confirms, random values and public keys contribute only their opcode to the
+summary. No payload from those messages is logged or retained. Opcode numbers are decimal:
+1 request, 2 response, 3 confirm, 4 random, 5 failure, 6 encryption information, 7 central
+identification, 8 identity information, 9 identity address, 10 signing information, 11 security
+request, 12 public key, 13 DHKey check and 14 keypress notification. These host-side observations
+do not prove over-the-air reception or that the controller accepted a command.
 
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
 events go through one queue in the manager, so reports from the two gamepads are handled in

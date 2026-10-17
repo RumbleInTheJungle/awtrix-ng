@@ -435,6 +435,69 @@ void unavailableHciMonitorDoesNotBlockBluetooth() {
   }), "monitor failures are explicit");
 }
 
+void hciMonitorPairsWithoutLoggingSecrets() {
+  Fixture fixture(3, "4.9.84", 0, true);
+  const auto send = [&](uint16_t direction, uint16_t index, uint16_t flags, uint16_t cid, const Bytes& value,
+                        uint16_t advertisedLength = 0) {
+    Bytes packet;
+    appendWord(packet, direction);
+    appendWord(packet, index);
+    appendWord(packet, static_cast<uint16_t>(8 + value.size()));
+    appendWord(packet, flags);
+    appendWord(packet, static_cast<uint16_t>(4 + value.size()));
+    appendWord(packet, advertisedLength ? advertisedLength : static_cast<uint16_t>(value.size()));
+    appendWord(packet, cid);
+    packet.insert(packet.end(), value.begin(), value.end());
+    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
+    fixture.dispatch(fixture.sockets.monitor, POLLIN);
+  };
+  send(4, 0, 0x2042, 6, {1, 3, 0, 1, 16, 7, 7});
+  send(5, 0, 0x2042, 6, {2, 3, 0, 1, 16, 7, 7});
+  for (uint8_t opcode = 3; opcode <= 10; ++opcode) {
+    if (opcode == 5) continue;
+    Bytes secret(17, 0xa5);
+    secret[0] = opcode;
+    send(4, 0, 0x2042, 6, secret);
+    send(5, 0, 0x2042, 6, secret);
+  }
+  for (int i = 0; i < 6; ++i) {
+    send(5, 0, 0x2042, 6, {5, 4});
+    send(4, 0, 0x2042, 4, {0x52, 31, 0, 0xaa, 0xbb});
+  }
+  send(4, 0, 0x2042, 4, {0x12, 31, 0, 1, 0});
+  send(4, 0, 0x2043, 4, {0x12, 31, 0, 1, 0});
+  send(4, 1, 0x2042, 6, {1, 9, 9, 9, 9, 9, 9});
+  send(5, 0, 0x1042, 6, {1, 9, 9, 9, 9, 9, 9});
+  send(5, 0, 0x2042, 6, {1, 9}, 7);
+  send(5, 0, 0x2042, 6, {2, 9});
+  const auto count = [&](const std::string& part) {
+    return std::count_if(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+      return line.find(part) != std::string::npos;
+    });
+  };
+  check(count("SMP TX request: io=3 oob=0 auth=1 keysize=16 dist=7/7") == 1,
+        "monitor logs actual outgoing pairing capabilities");
+  check(count("SMP RX response: io=3 oob=0 auth=1 keysize=16 dist=7/7") == 1,
+        "monitor logs actual incoming pairing capabilities");
+  check(count("SMP RX failed reason 4") == 2, "SMP event detail is bounded per connection handle");
+  check(count("handle 66 ATT TX write command handle 31, L2CAP length 5") == 4,
+        "ATT outgoing write diagnostics are bounded");
+  check(count("handle 67 ATT TX write request handle 31, L2CAP length 5") == 1,
+        "write request diagnostics are independent per connection handle");
+  fixture.radio->power(false);
+  check(count("handle 66 SMP TX packets 8, opcodes 1,3,4,6,7,8,9,10") == 1,
+        "outgoing SMP summary includes only packet counts and opcode names");
+  check(count("handle 66 SMP RX packets 14, opcodes 2,3,4,5,6,7,8,9,10") == 1,
+        "incoming SMP summary counts even suppressed events");
+  check(count("notifications/indications 0, continuation fragments 1") == 1,
+        "SMP diagnostics preserve RX continuation and ATT counters");
+  check(count("malformed/truncated/over-limit records 2") == 1,
+        "truncated pairing capabilities are rejected without inspecting missing bytes");
+  check(count("a5a5") == 0 && count("A5A5") == 0 && count("aabb") == 0 && count("AABB") == 0,
+        "neither pairing key material nor written values appear in monitor logs");
+  check(count("io=9") == 0, "other adapters and continuation fragments are not decoded as SMP capabilities");
+}
+
 void socketNotificationDiagnosticsAreBounded() {
   Fixture fixture;
   const int fd = fixture.accept();
@@ -1195,6 +1258,7 @@ int main() {
   technicTimingUsesTheSocketHandle();
   pairingMethodMetadataContainsNoKeyMaterial();
   hciMonitorReceivesOnlyIncomingAttMetadata();
+  hciMonitorPairsWithoutLoggingSecrets();
   unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();

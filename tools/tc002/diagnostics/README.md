@@ -155,6 +155,19 @@ Beobachtung während des gesamten Tests. Die Verschlüsselung und GATT-Zugriffe
 funktionierten. Einzelne andere Versuche scheiterten bereits bei der
 Authentifizierung. Diese Ergebnisse legen die Ursache noch nicht fest.
 
+Auch mit zugeschaltetem Exit Suspend ergab `read_first` bei MTU-Austausch ein,
+Timing aus und gelesener Report-Map sechs unveränderte Proben ohne
+Benachrichtigung. Ein weiterer Lauf mit `all_reports`, MTU-Austausch ein,
+Timing ein, Report-Map ein und Exit Suspend ein empfing ebenfalls keine
+Benachrichtigungen. Dort waren null Leseproben erwartet. Eine anschließende
+Bluetooth-Verbindung desselben Controllers mit dem Mac funktionierte laut
+Rückmeldung einwandfrei. Ein erneuter Pybricks-Vergleich war nicht verfügbar.
+
+Diese Berry-Varianten ergaben damit bisher keinen funktionierenden Ablauf.
+Für die weitere Untersuchung ergänzt der nächste Testbuild SMP-Metadaten und
+ausgehende ATT-Schreibheader im HCI-Monitor. Die Scriptversion 1.4 genügt dafür.
+Die Details stehen in der [Bluetooth-Entwicklerdokumentation](../../../docs/developers/tc002/bluetooth.md).
+
 ## Was das Ergebnis aussagt
 
 - `START` protokolliert die gewählten Einstellungen. `Abonnement angefragt`

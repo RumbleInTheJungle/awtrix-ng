@@ -13,6 +13,20 @@
 namespace awtrix::ble {
 using namespace linux_detail;
 
+namespace {
+
+std::string smpTypes(uint16_t mask) {
+  std::string out;
+  for (unsigned op = 1; op <= 14; ++op) {
+    if (!(mask & (1u << op))) continue;
+    if (!out.empty()) out += ',';
+    out += std::to_string(op);
+  }
+  return out.empty() ? "none" : out;
+}
+
+}
+
 void LinuxBleRadio::openMonitor() {
   monitorFd_ = ::socket(kAfBluetooth, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, kProtoHci);
   SockaddrHci address{static_cast<sa_family_t>(kAfBluetooth), kNoDevice, kChannelMonitor};
@@ -23,7 +37,7 @@ void LinuxBleRadio::openMonitor() {
     note("ble: HCI input monitor unavailable: " + std::string(std::strerror(error)));
     return;
   }
-  note("ble: HCI input monitor enabled (RX metadata only)");
+  note("ble: HCI monitor enabled (ATT RX/write TX, SMP metadata only)");
 }
 
 void LinuxBleRadio::summarizeMonitor(uint16_t handle) {
@@ -32,6 +46,9 @@ void LinuxBleRadio::summarizeMonitor(uint16_t handle) {
   note("ble: HCI handle " + std::to_string(handle) + " RX summary: ACL " + std::to_string(s->second.acl) +
        ", ATT starts " + std::to_string(s->second.att) + ", notifications/indications " +
        std::to_string(s->second.notifications) + ", continuation fragments " + std::to_string(s->second.continuations));
+  const std::string prefix = "ble: HCI handle " + std::to_string(handle) + " SMP ";
+  note(prefix + "TX packets " + std::to_string(s->second.smpTx) + ", opcodes " + smpTypes(s->second.smpTxTypes));
+  note(prefix + "RX packets " + std::to_string(s->second.smpRx) + ", opcodes " + smpTypes(s->second.smpRxTypes));
   monitorStats_.erase(s);
 }
 
@@ -44,8 +61,8 @@ void LinuxBleRadio::closeMonitor() {
   monitorDropped_ = 0;
 }
 
-// Monitor records have a six-byte header; ACL RX (5) then carries the ACL and L2CAP headers.
-// Inspect only ATT starts. Continuations are counted, not decoded or retained.
+// Monitor records carry a six-byte header, then ACL and L2CAP headers for TX (4) or RX (5).
+// Log only packet types and pairing capabilities, never key distribution or input payloads.
 void LinuxBleRadio::readMonitor() {
   uint8_t packet[4096];
   for (unsigned budget = 0; budget < 32; ++budget) {
@@ -66,7 +83,9 @@ void LinuxBleRadio::readMonitor() {
       ++monitorDropped_;
       continue;
     }
-    if (le16(packet) != 5 || le16(packet + 2) != index_) continue;
+    const uint16_t direction = le16(packet);
+    const bool incoming = direction == 5;
+    if ((!incoming && direction != 4) || le16(packet + 2) != index_) continue;
     if (n < 10 || le16(packet + 8) != n - 10) {
       ++monitorDropped_;
       continue;
@@ -78,26 +97,62 @@ void LinuxBleRadio::readMonitor() {
       continue;
     }
     auto& stats = monitorStats_[handle];
-    ++stats.acl;
+    if (incoming) ++stats.acl;
     if (((flags >> 12) & 3) == 1) {
-      ++stats.continuations;
+      if (incoming) ++stats.continuations;
       continue;
     }
-    if (n < 15 || le16(packet + 12) != kAttCid) continue;
-    ++stats.att;
+    if (n < 15) continue;
+    const uint16_t cid = le16(packet + 12);
+    const uint16_t length = le16(packet + 10);
     const uint8_t op = packet[14];
-    const std::string prefix = "ble: HCI handle " + std::to_string(handle) + " ATT RX ";
+    const std::string prefix = "ble: HCI handle " + std::to_string(handle);
+    if (cid == 6) {
+      if (length == 0 || length > n - 14 || op == 0 || op > 14 ||
+          ((op == 1 || op == 2) && length != 7) || (op == 5 && length != 2)) {
+        ++monitorDropped_;
+        continue;
+      }
+      if (incoming) {
+        ++stats.smpRx;
+        stats.smpRxTypes |= static_cast<uint16_t>(1u << op);
+      } else {
+        ++stats.smpTx;
+        stats.smpTxTypes |= static_cast<uint16_t>(1u << op);
+      }
+      if (stats.loggedSmp < 4 && (op == 1 || op == 2 || op == 5)) {
+        ++stats.loggedSmp;
+        std::string line = prefix + (incoming ? " SMP RX " : " SMP TX ");
+        if (op == 5) line += "failed reason " + std::to_string(packet[15]);
+        else line += std::string(op == 1 ? "request" : "response") +
+                     ": io=" + std::to_string(packet[15]) + " oob=" + std::to_string(packet[16]) +
+                     " auth=" + std::to_string(packet[17]) + " keysize=" + std::to_string(packet[18]) +
+                     " dist=" + std::to_string(packet[19]) + "/" + std::to_string(packet[20]);
+        note(line);
+      }
+      continue;
+    }
+    if (cid != kAttCid) continue;
+    if (!incoming) {
+      if ((op == att::kWriteReq || op == att::kWriteCmd) && n >= 17 && stats.loggedWrites < 4) {
+        ++stats.loggedWrites;
+        note(prefix + " ATT TX " + (op == att::kWriteReq ? "write request" : "write command") +
+             " handle " + std::to_string(le16(packet + 15)) + ", L2CAP length " + std::to_string(length));
+      }
+      continue;
+    }
+    ++stats.att;
     if (op == att::kNotify || op == att::kIndicate) {
       ++stats.notifications;
       if (stats.loggedNotifications < 3) {
         ++stats.loggedNotifications;
-        note(prefix + (op == att::kNotify ? "notification" : "indication") +
+        note(prefix + " ATT RX " + (op == att::kNotify ? "notification" : "indication") +
              (n >= 17 ? " value handle " + std::to_string(le16(packet + 15)) : " (fragmented header)") +
              ", L2CAP length " + std::to_string(le16(packet + 10)));
       }
     } else if (stats.loggedAtt < 3) {
       ++stats.loggedAtt;
-      note(prefix + "opcode " + std::to_string(op) + ", L2CAP length " + std::to_string(le16(packet + 10)));
+      note(prefix + " ATT RX opcode " + std::to_string(op) + ", L2CAP length " + std::to_string(le16(packet + 10)));
     }
   }
 }

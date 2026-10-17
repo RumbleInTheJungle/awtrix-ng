@@ -146,6 +146,8 @@ class LinuxBleRadio : public BleRadio {
   struct MonitorStats {
     unsigned acl = 0, att = 0, continuations = 0, notifications = 0;
     unsigned loggedAtt = 0, loggedNotifications = 0;
+    unsigned smpTx = 0, smpRx = 0, loggedSmp = 0, loggedWrites = 0;
+    uint16_t smpTxTypes = 0, smpRxTypes = 0;
   };
   std::map<uint16_t, MonitorStats> monitorStats_;
   unsigned monitorDropped_ = 0;
