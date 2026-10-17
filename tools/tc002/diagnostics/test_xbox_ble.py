@@ -68,7 +68,8 @@ end
 ble.disconnect = def (id) h['disconnects'].push(id) return true end
 ble.on_disconnect = def (id, cb) h['disconnect'] = cb end
 ble.services = def (id)
-  return [{'uuid':'1812', 'chars':[{'uuid':'2a4d','props':'rn'}]},
+  if h.find('missing_map', false) return [] end
+  return [{'uuid':'1812', 'chars':[{'uuid':'2a4d','props':'rn'}, {'uuid':'2a4b','props':'r'}]},
           {'uuid':'180a', 'chars':[{'uuid':'2a26','props':'r'}]}]
 end
 ble.read = def (id, svc, chr, cb)
@@ -209,7 +210,7 @@ assert(!h.contains('forgotten'))
         self.run_case("h['bonds'] = [cfg['address']]\nh['reject'] = 'forget'\napp.setup()\nassert(app.state == 'done' && !h.contains('scan'))", forget_once=True)
 
     def test_failure_cleanup_and_start_marker(self):
-        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.2' && !cfg['start_once'])", address="")
+        self.run_case("app.setup()\nassert(h['logs'][0] == 'XBD: APP START v1.3' && !cfg['start_once'])", address="")
         self.run_case("app.setup()\nfound()\nh['connect'](nil,'Permission denied')\nassert(app.state == 'done' && h['disconnects'] == [])")
         self.run_case("app.setup()\nlinked()\napp.loop()\nh['disconnect']('peer closed')\nassert(app.state == 'done' && h['disconnects'] == [] && h['stops'] == [1])")
 
@@ -241,9 +242,43 @@ assert(restarted.state == 'scan' && !cfg['start_once'])
         self.run_case(r'''
 app.setup()
 linked()
-assert(size(h['logs']) == 6)
-assert(h['logs'][5] == 'XBD: Dienste=2 HID-Reports=1')
+assert(size(h['logs']) == 7)
+assert(h['logs'][6] == 'XBD: Dienste=2 HID-Reports=1')
 ''')
+
+    def test_report_map_before_input_and_subscription(self):
+        self.assertFalse(self.defaults['report_map'])
+        for mode in ('notify', 'read_first', 'all_reports'):
+            with self.subTest(mode=mode):
+                self.run_case(r'''
+app.setup()
+linked()
+assert(app.state == 'map' && h['read_chr'] == '2a4b' && !h.contains('notify'))
+app.loop()
+assert(app.state == 'map')
+h['read'](bytes('05010905'), nil)
+assert(app.state == 'pause' && app.samples == 0)
+app.loop()
+if cfg['mode'] == 'read_first'
+  assert(app.state == 'read' && h['read_chr'] == '2a4d')
+  h['read'](bytes('0102'), nil)
+end
+assert(app.state == 'listen' && h.contains('notify'))
+''', report_map=True, mode=mode)
+        self.run_case("app.setup()\nlinked()\nassert(!h.contains('read'))")
+
+    def test_report_map_failures_and_late_reply(self):
+        for setup, action in (
+            ("h['missing_map'] = true", ""),
+            ("h['reject'] = 'read'", ""),
+            ("", "h['read'](nil, 'read denied')"),
+            ("", "h['read'](bytes(), nil)"),
+            ("", "h['now'] = app.deadline\napp.loop()\nh['read'](bytes('0501'),nil)"),
+            ("", "h['disconnect']('peer closed')\nh['read'](bytes('0501'),nil)"),
+        ):
+            with self.subTest(setup=setup, action=action):
+                self.run_case(setup + "\napp.setup()\nlinked()\n" + action +
+                              "\nassert(app.state == 'done' && !h.contains('notify'))", report_map=True)
 
 
 if __name__ == "__main__":

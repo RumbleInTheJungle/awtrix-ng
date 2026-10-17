@@ -41,12 +41,12 @@ Wiederholung. Ein Aus- und Einschalten der Uhr ist normalerweise nicht nötig.
 ### Keine neuen Script-Logs
 
 Aktivieren nimmt die App in die Rotation auf, startet aber keinen neuen Test.
-In Version 1.2 löst **Test einmal starten → Ein → Speichern** einen Lauf aus.
+Ab Version 1.2 löst **Test einmal starten → Ein → Speichern** einen Lauf aus.
 Falls die Einstellungen noch den eingeschalteten Schalter anzeigen, den Dialog
 schließen und erneut öffnen. Dann lässt sich die nächste Änderung speichern.
 Ein Speichern ohne geänderte Einstellung löst keinen Neustart aus.
 
-Ein angeforderter Lauf meldet zuerst `XBD: APP START v1.2`, auch wenn eine
+Ein angeforderter Lauf meldet zuerst `XBD: APP START v1.3`, auch wenn eine
 Einstellung fehlt oder das Gamepad-Modul den Test blockiert. Ohne Startauftrag
 bleibt die App still, auch beim Booten. Im Log nach `XBD:` suchen und einen
 eventuell gesetzten Filter entfernen. Fehlt die Startmeldung trotz Startauftrag,
@@ -87,6 +87,7 @@ unterschiedliche Geräte.
 | Pause vor dem Abonnieren | Wartet nach den optionalen Geräteinformationen, bevor der jeweilige Testablauf beginnt. |
 | Beobachtungsdauer | 20–180 Sekunden ab der Abonnement-Anfrage; Vorgabe 60 Sekunden. |
 | Geräteinformationen lesen | Listet zusätzlich verfügbare Hersteller-, Modell-, Firmware- und Softwarewerte auf. Die Werte erscheinen als Hex, damit beliebige Zeichen das Log nicht verfälschen. |
+| HID-Report-Map vorher lesen | Optional: liest `1812` / `2a4b` nach den Geräteinformationen, vor der Pause und vor Eingabeproben oder Abonnement. Protokolliert nur die Länge. Fehler oder ein leeres Ergebnis beenden den Versuch. Vorgabe aus. |
 | Controller-Kopplung einmal löschen | Optionaler gezielter Neustart der Kopplung; setzt sich vor dem Löschversuch wieder auf aus. |
 
 Vor jedem weiteren Versuch den Controller aus- und wieder einschalten, in den
@@ -99,6 +100,23 @@ GATT-Clients können außerdem ihre MTU und ihr Timing behalten.
 Zuerst `notify` testen. Danach jeweils nur den Testablauf zu `read_first` oder
 `all_reports` ändern. MTU, Timing, Geräteinformationen und Pause dabei zunächst
 gleich lassen. Weitere Varianten gezielt nach Auswertung des Logs auswählen.
+
+### Report-Map mit Pybricks vergleichen
+
+Der [Pybricks-Xbox-Verbindungsablauf](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/pybricks/iodevices/pb_type_iodevices_xbox_controller.c)
+liest die HID-Report-Map vor dem Abonnieren. Der Kommentar beschreibt das Lesen
+als möglicherweise nötig, um den Controller nach dem Koppeln zu aktivieren.
+Die Report-Map beschreibt das Format der Eingaben. Sie enthält keine aktuellen
+Tastenwerte. Der AWTRIX-Gamepad-Code liest sie bereits. Ein fehlendes Lesen
+erklärt deshalb nicht automatisch die bisherigen Fehler im Gamepad-Modul.
+
+Für den Vergleich innerhalb des Berry-Scripts **HID-Report-Map vorher lesen**
+einschalten und die übrigen Einstellungen des Vergleichslaufs beibehalten.
+Wurde im Vergleichslauf die Kopplung gelöscht, auch hier die Option einmal
+aktivieren. Erwartet wird `HID-Report-Map: ... Bytes` vor dem ersten `READ`
+oder der Abonnement-Anfrage. Die App dekodiert die Map nicht.
+Das ist ein einzelner Vergleichsschritt, keine vollständige Nachbildung des
+Pybricks-Treibers. Insbesondere bleibt die bisherige CCCD-Schreibweise bestehen.
 
 ## Was das Ergebnis aussagt
 
@@ -116,7 +134,8 @@ gleich lassen. Weitere Varianten gezielt nach Auswertung des Logs auswählen.
 - Bei `all_reports` enthält der Callback keinen Ursprungshandle. Ein Empfang
   beweist daher zunächst nur, dass mindestens eine der abonnierten Instanzen
   Werte liefert.
-- Die App liest keine Report Map und dekodiert keine Tasten. Sie nutzt denselben
+- Die App liest die Report-Map nur mit der entsprechenden Option und dekodiert
+  keine Tasten. Sie nutzt denselben
   BLE-Hub wie das Gamepad-Modul, aber eine eigene Abfolge. Die internen
   `readInitial`-Diagnoseproben und der automatische CCCD-Write-Command-Versuch
   bleiben für ihre Abonnements aus. So können wir zuerst das normale Abonnieren
@@ -138,5 +157,6 @@ Benötigt Python 3 und `cc`. Der Test baut den vorhandenen Berry-Interpreter in
 einem temporären Verzeichnis und führt die App mit simulierten BLE-Callbacks
 aus. Geprüft werden die drei Abläufe, Geräteinformationen, Optionen, Wartezeit,
 Zeitlimits, Ablehnungen, Trennungen, späte Callbacks, der ausdrückliche Start,
-das stille Laden ohne Startauftrag und die Sperre bei aktivem
+das stille Laden ohne Startauftrag, die optionale Report-Map mit Fehler- und
+Timeout-Pfaden und die Sperre bei aktivem
 Gamepad-Modul. Das ersetzt keinen Test mit der Uhr und dem Controller.

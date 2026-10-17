@@ -1,6 +1,6 @@
 # @name Xbox BLE Diagnose
 # @desc BLE-Test mit Startschalter in den App-Einstellungen; Ergebnisse stehen im Log
-# @version 1.2
+# @version 1.3
 # @config start_once bool "Test einmal starten" default=false help="Einschalten und Einstellungen speichern; setzt sich vor dem Versuch wieder auf aus"
 # @config address text "Controller-Adresse" default="" maxlen=17 help="Bluetooth-Adresse aus deinem Log"
 # @config mode select "Testablauf" default=notify options=notify,read_first,all_reports help="notify: Report 1; read_first: vorher lesen; all_reports: alle HID-Notifications"
@@ -9,6 +9,7 @@
 # @config delay number "Pause vor dem Abonnieren" default=0 min=0 max=10000 unit=ms
 # @config duration number "Beobachtungsdauer" default=60 min=20 max=180 unit=s
 # @config info bool "Geräteinformationen lesen" default=true
+# @config report_map bool "HID-Report-Map vorher lesen" default=false help="Liest vor Eingabeproben und Abonnement die Report-Map wie Pybricks; protokolliert nur die Laenge"
 # @config forget_once bool "Controller-Kopplung einmal löschen" default=false help="Löscht nur den Bond dieser Adresse vor dem Scan und schaltet sich selbst wieder aus"
 
 import ble
@@ -17,7 +18,7 @@ import string
 
 class XboxBleDiagnostic
   var state, scan, conn, subscription, deadline, action_at
-  var address, mode, mtu, timing, delay_ms, duration_ms, info
+  var address, mode, mtu, timing, delay_ms, duration_ms, info, report_map
   var services, notifications, samples, previous, changed, next_read, reading
 
   def init()
@@ -39,6 +40,7 @@ class XboxBleDiagnostic
     self.mtu = store.get("mtu") == true
     self.timing = store.get("timing") == true
     self.info = store.get("info") == true
+    self.report_map = store.get("report_map") == true
     var pause = store.get("delay")
     var duration = store.get("duration")
     self.delay_ms = type(pause) == "int" ? pause : 0
@@ -63,7 +65,7 @@ class XboxBleDiagnostic
       return
     end
     store.set("start_once", false)
-    self.note("APP START v1.2")
+    self.note("APP START v1.3")
     if type(self.address) != "string" || size(self.address) != 17
       self.finish("Controller-Adresse in den App-Einstellungen eintragen")
       return
@@ -90,8 +92,9 @@ class XboxBleDiagnostic
         self.note("Kein gespeicherter Controller-Bond vorhanden")
       end
     end
-    self.note("START v1.2 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
+    self.note("START v1.3 mode=" + self.mode + " mtu=" + str(self.mtu) + " timing=" + str(self.timing))
     self.note("delay_ms=" + str(self.delay_ms) + " duration_ms=" + str(self.duration_ms) + " info=" + str(self.info))
+    self.note("report_map=" + str(self.report_map))
     self.state = "scan"
     self.deadline = now_ms() + 30000
     self.scan = ble.scan(def (device, err)
@@ -156,7 +159,7 @@ class XboxBleDiagnostic
     # Standard Device Information fields only, never serial numbers or bond keys.
     var fields = [["2a29", "Hersteller"], ["2a24", "Modell"], ["2a26", "Firmware"], ["2a28", "Software"]]
     if !self.info || index >= size(fields)
-      self.before_subscription()
+      self.read_map()
       return
     end
     var field = fields[index]
@@ -177,6 +180,28 @@ class XboxBleDiagnostic
       self.read_info(index + 1)
     end)
     if request == nil self.finish("Geraeteinfo-Anfrage abgelehnt") end
+  end
+
+  def read_map()
+    if !self.report_map
+      self.before_subscription()
+      return
+    end
+    if !self.has("1812", "2a4b", "r")
+      self.finish("Lesbare HID-Report-Map fehlt")
+      return
+    end
+    self.state = "map"
+    self.deadline = now_ms() + 30000
+    self.note("HID-Report-Map lesen")
+    var request = ble.read(self.conn, "1812", "2a4b", def (data, err)
+      if self.state != "map" return end
+      if err != nil self.finish("HID-Report-Map: " + str(err)) return end
+      if data == nil || size(data) == 0 self.finish("HID-Report-Map leer") return end
+      self.note("HID-Report-Map: " + str(size(data)) + " Bytes")
+      self.before_subscription()
+    end)
+    if request == nil self.finish("HID-Report-Map-Anfrage abgelehnt") end
   end
 
   def before_subscription()
