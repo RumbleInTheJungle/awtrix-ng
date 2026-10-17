@@ -168,6 +168,22 @@ Für die weitere Untersuchung ergänzt der nächste Testbuild SMP-Metadaten und
 ausgehende ATT-Schreibheader im HCI-Monitor. Die Scriptversion 1.4 genügt dafür.
 Die Details stehen in der [Bluetooth-Entwicklerdokumentation](../../../docs/developers/tc002/bluetooth.md).
 
+Der Test mit Firmware `a312207` bestätigte die Schreibzugriffe auf den
+HID-Control-Point (Handle 26) und den Benachrichtigungsdeskriptor (Handle 31)
+auch im HCI-Monitor. Bei weiterhin null Benachrichtigungen zeigten die
+SMP-Metadaten eine neue Vergleichsmöglichkeit: Die Uhr bot als Initiator
+`dist=5/7` an, der Controller antwortete mit `dist=1/3`. Die Uhr sendete
+SMP-Typen `1,3,4,6,7`, der Controller `2,3,4,6,7,8,9`. Identitätsinformationen
+(Typen 8 und 9) kamen damit nur vom Controller.
+
+Der folgende Testbuild ergänzt eine dauerhaft gespeicherte lokale BLE-Identität
+und aktiviert LE Privacy. Das ist ein adapterweiter Vergleich und kann auch
+andere BLE-Kopplungen betreffen. Für diesen Test Script 1.4 mit denselben
+Einstellungen verwenden und **Controller-Kopplung einmal löschen** einschalten.
+Erwartet werden eine Meldung zur lokalen BLE-Identität und bei einer frischen
+Kopplung zusätzlich ausgehende SMP-Typen 8 und 9. Erst eingehende
+Benachrichtigungen bestätigen eine nutzbare Eingabeverbindung.
+
 ## Was das Ergebnis aussagt
 
 - `START` protokolliert die gewählten Einstellungen. `Abonnement angefragt`

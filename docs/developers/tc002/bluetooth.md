@@ -83,6 +83,24 @@ enabled. The mode applies to the whole adapter, including other BLE peers; it is
 setting. A rejected disable command stops Bluetooth startup rather than silently testing another
 mode. Other radio clients keep the default Secure Connections policy.
 
+Gamepad support also enables an experimental local-identity comparison. Before powering on,
+the service uses the management Set Privacy command (`0x002f`, mode 1) with a local 128-bit IRK.
+`BondStore` generates it with `getrandom`, saves it as `local_irk` alongside peer keys in the
+private pairing JSON, and reloads it on restart. Removing a peer does not remove this local key.
+A failed persistent write prevents the new identity from being used. An empty bond-store path
+keeps the identity in memory only, like peer keys. Generation, storage or privacy-command failure
+stops Bluetooth startup with an error. No identity-key bytes are logged.
+
+Privacy applies to the whole adapter, including advertising and other peers. A newly enabled
+private address may require existing peers to be paired again so they learn the local identity.
+This test leaves the security and connection-parameter comparisons unchanged. Other radio clients
+do not request privacy by default. A fresh controller pairing is needed to negotiate identity
+distribution; previously stored keys do not demonstrate it. Look for outgoing SMP opcodes 8 and 9
+in addition to the privacy configuration message. Whether this fixes Xbox input remains a hardware
+question. Reports in [BlueZ issue 155](https://github.com/bluez/bluez/issues/155) and the
+[xpadneo identity/timing investigation](https://github.com/atar-axis/xpadneo/issues/449)
+describe similar symptoms, but also include conflicting experience with privacy stability.
+
 The comparison does not erase existing bonds. Remove the controller's saved gamepad entry and
 BLE bond before the test, restart the clock, and put the controller into pairing mode again.
 Verify the New Long Term Key message reports legacy pairing; a reused Secure Connections key

@@ -257,6 +257,55 @@ void encryptedSubscriptions() {
   }
 }
 
+void persistentLocalBleIdentity() {
+  char directory[] = "/tmp/awtrix-ble-identity-XXXXXX";
+  const char* made = ::mkdtemp(directory);
+  check(made != nullptr, "local identity fixture gets a private directory");
+  if (!made) return;
+  const std::string path = std::string(directory) + "/bonds.json";
+  const std::function<void(const std::string&)> log;
+  Bytes identity;
+  const Address peer = mkaddr("02:00:00:00:00:11");
+  Bytes ltk(BondStore::kLtkInfo, 0);
+  std::copy(peer.b.begin(), peer.b.end(), ltk.begin());
+  ltk[6] = 1;
+  {
+    BondStore seed(path, log);
+    seed.rememberLtk(ltk);
+  }
+  {
+    BondStore store(path, log);
+    store.load();
+    check(store.localIrk().empty(), "old bond files need no local identity field");
+    check(store.ensureLocalIrk(), "local identity is securely generated and persisted");
+    identity = store.localIrk();
+    check(identity.size() == 16 && std::any_of(identity.begin(), identity.end(), [](uint8_t b) { return b != 0; }),
+          "local identity is a nonzero 128-bit key");
+    check(store.ensureLocalIrk() && store.localIrk() == identity, "repeated setup preserves the local identity");
+    struct stat state{};
+    check(::stat(path.c_str(), &state) == 0 && (state.st_mode & 0777) == 0600,
+          "local identity shares the private pairing store");
+  }
+  {
+    BondStore restored(path, log);
+    restored.load();
+    check(restored.localIrk() == identity && restored.contains(peer), "local and peer keys survive reload together");
+    restored.forget(peer);
+  }
+  {
+    BondStore restored(path, log);
+    restored.load();
+    check(restored.localIrk() == identity && !restored.contains(peer),
+          "forgetting the final peer does not rotate the host identity");
+  }
+  const std::string missing = std::string(directory) + "/missing/bonds.json";
+  BondStore failed(missing, log);
+  check(!failed.ensureLocalIrk() && failed.localIrk().empty(),
+        "an identity that could not be persisted is not shared with a peer");
+  ::unlink(path.c_str());
+  check(::rmdir(directory) == 0, "local identity writes leave no temporary files");
+}
+
 void persistentBonds() {
   char directory[] = "/tmp/awtrix-ble-bonds-XXXXXX";
   const char* made = ::mkdtemp(directory);
@@ -1352,6 +1401,7 @@ int main() {
   clientAgainstServer(false);
   encryptedSubscriptions();
   persistentBonds();
+  persistentLocalBleIdentity();
   sharedScan();
   rateLimit();
   sharedConnection();

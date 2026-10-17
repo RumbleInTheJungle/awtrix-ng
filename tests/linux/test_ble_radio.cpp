@@ -93,6 +93,7 @@ struct SocketController {
   std::vector<Bytes> rawCommands;
   std::vector<Bytes> managementCommands;
   uint8_t secureConnectionsStatus = 0;
+  uint8_t privacyStatus = 0;
   std::vector<std::pair<int, int>> securityRequests;
   std::string kernelRelease = "4.9.84";
   bool controllerAttached = true;
@@ -140,7 +141,7 @@ struct SocketController {
     appendWord(reply, word(data + 2));
     appendWord(reply, static_cast<uint16_t>(3 + result.size()));
     appendWord(reply, op);
-    reply.push_back(op == 0x002d ? secureConnectionsStatus : 0);
+    reply.push_back(op == 0x002d ? secureConnectionsStatus : op == 0x002f ? privacyStatus : 0);
     reply.insert(reply.end(), result.begin(), result.end());
     sendTo(fd, reply);
   }
@@ -189,15 +190,18 @@ struct Fixture {
   int64_t now = 100;
 
   explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0,
-                   bool monitor = false, bool denyMonitor = false, bool enableSc = true) {
+                   bool monitor = false, bool denyMonitor = false, bool enableSc = true,
+                   bool privacy = false, uint8_t privacyStatus = 0) {
     controller = &sockets;
     sockets.kernelRelease = std::move(release);
     sockets.secureConnectionsStatus = scStatus;
     sockets.denyMonitor = denyMonitor;
+    sockets.privacyStatus = privacyStatus;
     LinuxBleRadio::Options options;
     options.connectAttempts = attempts;
     options.monitorInput = monitor;
     options.secureConnections = enableSc;
+    options.privacy = privacy;
     options.log = [this](const std::string& line) { logs.push_back(line); };
     radio = std::make_unique<LinuxBleRadio>(std::move(options));
     BleRadio::Events events;
@@ -209,7 +213,8 @@ struct Fixture {
     };
     radio->setEvents(std::move(events));
     radio->power(true);
-    if (!enableSc && scStatus != 0) check(!powered, "a rejected legacy test does not power on");
+    if ((!enableSc && scStatus != 0) || (privacy && privacyStatus != 0))
+      check(!powered, "a rejected pairing configuration does not power on");
     else check(powered && sockets.scanner >= 0 && sockets.listener >= 0, "radio powers through the socket backend");
   }
 
@@ -524,6 +529,40 @@ void socketNotificationDiagnosticsAreBounded() {
   check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
     return line.find("notification handle 30, 2 bytes") != std::string::npos;
   }), "socket diagnostic identifies the value handle and payload length");
+}
+
+void localBleIdentityConfiguration() {
+  for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
+    Fixture fixture(3, "4.9.84", 0, false, false, true, true, status);
+    const auto& commands = fixture.sockets.managementCommands;
+    const auto privacy = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x002f;
+    });
+    const auto power = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
+      return word(command.data()) == 0x0005;
+    });
+    check(privacy != commands.end() && privacy->size() == 23 && (*privacy)[6] == 1,
+          "Set Privacy carries normal privacy mode and a full local IRK");
+    check(status == 0 ? power != commands.end() && privacy < power : power == commands.end(),
+          "local BLE identity is configured before power and rejection does not silently continue");
+    if (status == 0) {
+      const Bytes original = *privacy;
+      const std::string encoded = awtrix::ble::toHex(Bytes(original.begin() + 7, original.end()));
+      fixture.radio->power(false);
+      fixture.radio->power(true);
+      const auto last = std::find_if(commands.rbegin(), commands.rend(), [](const Bytes& command) {
+        return word(command.data()) == 0x002f;
+      });
+      check(last != commands.rend() && *last == original, "radio power cycles preserve its local identity");
+      check(std::none_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
+        return line.find(encoded) != std::string::npos;
+      }), "local identity bytes are never logged");
+    }
+  }
+  Fixture defaults;
+  check(std::none_of(defaults.sockets.managementCommands.begin(), defaults.sockets.managementCommands.end(),
+                     [](const Bytes& command) { return word(command.data()) == 0x002f; }),
+        "privacy is opt-in for radio users outside the gamepad test configuration");
 }
 
 void secureConnectionsConfiguration() {
@@ -1262,6 +1301,7 @@ int main() {
   unavailableHciMonitorDoesNotBlockBluetooth();
   socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();
+  localBleIdentityConfiguration();
   connectionParameterDiagnostics();
   outgoingConnectionsAreQueued();
   cancelledQueuedConnectionDoesNotTouchTheActiveOne();

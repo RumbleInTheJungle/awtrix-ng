@@ -34,6 +34,8 @@ class LinuxBleRadio : public BleRadio {
     int64_t secureTimeoutMs = 30000;
     bool monitorInput = false;
     bool secureConnections = true;
+    // Adapter-wide privacy enables distributing our local identity during pairing.
+    bool privacy = false;
     std::function<void(const std::string&)> log;
   };
 

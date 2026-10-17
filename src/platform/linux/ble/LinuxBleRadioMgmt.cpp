@@ -135,6 +135,20 @@ void LinuxBleRadio::configure() {
   slots_ = mgmt(kReadAdvFeatures, {}, &features) == 0 && features.size() >= 7 ? features[6] : 0;
   mgmt(kSetIoCapability, {0x03});
   mgmt(kSetBondable, {0x01});
+  if (options_.privacy) {
+    if (!bonds_.ensureLocalIrk()) {
+      fail("cannot create and store the local BLE identity");
+      return;
+    }
+    Bytes params{0x01};
+    params.insert(params.end(), bonds_.localIrk().begin(), bonds_.localIrk().end());
+    const int privacy = mgmt(kSetPrivacy, params);
+    if (privacy != 0) {
+      fail("BLE identity test unavailable: cannot enable privacy (status " + std::to_string(privacy) + ")");
+      return;
+    }
+    note("ble: local BLE identity configured; LE privacy enabled for the whole adapter");
+  }
   const int sc = mgmt(kSetSecureConnections, {static_cast<uint8_t>(options_.secureConnections ? 1 : 0)});
   if (!options_.secureConnections) {
     if (sc != 0) {
