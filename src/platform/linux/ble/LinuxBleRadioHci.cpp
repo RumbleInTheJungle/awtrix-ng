@@ -8,177 +8,9 @@
 #include <unistd.h>
 
 #include "platform/linux/ble/LinuxBleProtocol.h"
-#include "platform/linux/ble/Att.h"
 
 namespace awtrix::ble {
 using namespace linux_detail;
-
-namespace {
-
-std::string smpTypes(uint16_t mask) {
-  std::string out;
-  for (unsigned op = 1; op <= 14; ++op) {
-    if (!(mask & (1u << op))) continue;
-    if (!out.empty()) out += ',';
-    out += std::to_string(op);
-  }
-  return out.empty() ? "none" : out;
-}
-
-}
-
-void LinuxBleRadio::openMonitor() {
-  monitorFd_ = ::socket(kAfBluetooth, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, kProtoHci);
-  SockaddrHci address{static_cast<sa_family_t>(kAfBluetooth), kNoDevice, kChannelMonitor};
-  if (monitorFd_ < 0 || ::bind(monitorFd_, reinterpret_cast<sockaddr*>(&address), sizeof address) < 0) {
-    const int error = errno;
-    if (monitorFd_ >= 0) ::close(monitorFd_);
-    monitorFd_ = -1;
-    note("ble: HCI input monitor unavailable: " + std::string(std::strerror(error)));
-    return;
-  }
-  monitorCommands_ = 0;
-  note("ble: HCI monitor enabled (scan/connect, ATT, SMP metadata only)");
-}
-
-void LinuxBleRadio::summarizeMonitor(uint16_t handle) {
-  auto s = monitorStats_.find(handle);
-  if (s == monitorStats_.end()) return;
-  note("ble: HCI handle " + std::to_string(handle) + " RX summary: ACL " + std::to_string(s->second.acl) +
-       ", ATT starts " + std::to_string(s->second.att) + ", notifications/indications " +
-       std::to_string(s->second.notifications) + ", continuation fragments " + std::to_string(s->second.continuations));
-  const std::string prefix = "ble: HCI handle " + std::to_string(handle) + " SMP ";
-  note(prefix + "TX packets " + std::to_string(s->second.smpTx) + ", opcodes " + smpTypes(s->second.smpTxTypes));
-  note(prefix + "RX packets " + std::to_string(s->second.smpRx) + ", opcodes " + smpTypes(s->second.smpRxTypes));
-  monitorStats_.erase(s);
-}
-
-void LinuxBleRadio::closeMonitor() {
-  if (monitorFd_ < 0) return;
-  ::close(monitorFd_);
-  monitorFd_ = -1;
-  while (!monitorStats_.empty()) summarizeMonitor(monitorStats_.begin()->first);
-  note("ble: HCI input monitor closed; malformed/truncated/over-limit records " + std::to_string(monitorDropped_));
-  monitorDropped_ = 0;
-}
-
-// Monitor records carry a six-byte header, then ACL and L2CAP headers for TX (4) or RX (5).
-// Log only packet types and pairing capabilities, never key distribution or input payloads.
-void LinuxBleRadio::readMonitor() {
-  uint8_t packet[4096];
-  for (unsigned budget = 0; budget < 32; ++budget) {
-    const ssize_t received = ::recv(monitorFd_, packet, sizeof packet, MSG_DONTWAIT | MSG_TRUNC);
-    if (received < 0) {
-      if (errno != EAGAIN && errno != EWOULDBLOCK && errno != EINTR) {
-        note("ble: HCI input monitor read failed");
-        closeMonitor();
-      }
-      return;
-    }
-    if (received == 0) {
-      closeMonitor();
-      return;
-    }
-    const auto n = static_cast<std::size_t>(received);
-    if (n < 6 || n > sizeof packet || le16(packet + 4) != n - 6) {
-      ++monitorDropped_;
-      continue;
-    }
-    const uint16_t direction = le16(packet);
-    if (direction == 2 && le16(packet + 2) == index_) {
-      if (n < 9 || packet[8] != n - 9) {
-        ++monitorDropped_;
-        continue;
-      }
-      if (monitorCommands_ >= 8) continue;
-      const uint16_t command = le16(packet + 6);
-      if (command == 0x200b && packet[8] == 7) {
-        ++monitorCommands_;
-        note("ble: HCI TX scan params: type=" + std::to_string(packet[9]) +
-             " interval=" + std::to_string(le16(packet + 10)) + " window=" + std::to_string(le16(packet + 12)) +
-             " own=" + std::to_string(packet[14]) + " filter=" + std::to_string(packet[15]));
-      } else if (command == 0x200d && packet[8] == 25) {
-        ++monitorCommands_;
-        note("ble: HCI TX create connection: own=" + std::to_string(packet[21]) +
-             " filter=" + std::to_string(packet[13]) + " peer_type=" + std::to_string(packet[14]));
-      } else if (command == 0x2005 && packet[8] == 6) {
-        ++monitorCommands_;
-        note("ble: HCI TX set random address (value omitted)");
-      }
-      continue;
-    }
-    const bool incoming = direction == 5;
-    if ((!incoming && direction != 4) || le16(packet + 2) != index_) continue;
-    if (n < 10 || le16(packet + 8) != n - 10) {
-      ++monitorDropped_;
-      continue;
-    }
-    const uint16_t flags = le16(packet + 6);
-    const uint16_t handle = flags & 0x0fff;
-    if (!monitorStats_.count(handle) && monitorStats_.size() >= 16) {
-      ++monitorDropped_;
-      continue;
-    }
-    auto& stats = monitorStats_[handle];
-    if (incoming) ++stats.acl;
-    if (((flags >> 12) & 3) == 1) {
-      if (incoming) ++stats.continuations;
-      continue;
-    }
-    if (n < 15) continue;
-    const uint16_t cid = le16(packet + 12);
-    const uint16_t length = le16(packet + 10);
-    const uint8_t op = packet[14];
-    const std::string prefix = "ble: HCI handle " + std::to_string(handle);
-    if (cid == 6) {
-      if (length == 0 || length > n - 14 || op == 0 || op > 14 ||
-          ((op == 1 || op == 2) && length != 7) || (op == 5 && length != 2)) {
-        ++monitorDropped_;
-        continue;
-      }
-      if (incoming) {
-        ++stats.smpRx;
-        stats.smpRxTypes |= static_cast<uint16_t>(1u << op);
-      } else {
-        ++stats.smpTx;
-        stats.smpTxTypes |= static_cast<uint16_t>(1u << op);
-      }
-      if (stats.loggedSmp < 4 && (op == 1 || op == 2 || op == 5)) {
-        ++stats.loggedSmp;
-        std::string line = prefix + (incoming ? " SMP RX " : " SMP TX ");
-        if (op == 5) line += "failed reason " + std::to_string(packet[15]);
-        else line += std::string(op == 1 ? "request" : "response") +
-                     ": io=" + std::to_string(packet[15]) + " oob=" + std::to_string(packet[16]) +
-                     " auth=" + std::to_string(packet[17]) + " keysize=" + std::to_string(packet[18]) +
-                     " dist=" + std::to_string(packet[19]) + "/" + std::to_string(packet[20]);
-        note(line);
-      }
-      continue;
-    }
-    if (cid != kAttCid) continue;
-    if (!incoming) {
-      if ((op == att::kWriteReq || op == att::kWriteCmd) && n >= 17 && stats.loggedWrites < 4) {
-        ++stats.loggedWrites;
-        note(prefix + " ATT TX " + (op == att::kWriteReq ? "write request" : "write command") +
-             " handle " + std::to_string(le16(packet + 15)) + ", L2CAP length " + std::to_string(length));
-      }
-      continue;
-    }
-    ++stats.att;
-    if (op == att::kNotify || op == att::kIndicate) {
-      ++stats.notifications;
-      if (stats.loggedNotifications < 3) {
-        ++stats.loggedNotifications;
-        note(prefix + " ATT RX " + (op == att::kNotify ? "notification" : "indication") +
-             (n >= 17 ? " value handle " + std::to_string(le16(packet + 15)) : " (fragmented header)") +
-             ", L2CAP length " + std::to_string(le16(packet + 10)));
-      }
-    } else if (stats.loggedAtt < 3) {
-      ++stats.loggedAtt;
-      note(prefix + " ATT RX opcode " + std::to_string(op) + ", L2CAP length " + std::to_string(le16(packet + 10)));
-    }
-  }
-}
 
 bool LinuxBleRadio::openScanner() {
   scanFd_ = ::socket(kAfBluetooth, SOCK_RAW | SOCK_CLOEXEC | SOCK_NONBLOCK, kProtoHci);
@@ -289,7 +121,6 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
   if (n < 3 || p[0] != 0x04 || n < static_cast<std::size_t>(p[2]) + 3) return;
   if (p[1] == 0x05 && p[2] >= 4 && p[3] == 0) {
     const uint16_t handle = le16(p + 4);
-    summarizeMonitor(handle);
     peripheralHandles_.erase(handle);
     if (directLink_) {
       auto it = links_.find(directLink_);
@@ -317,7 +148,7 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
       hciErrors_[op] = status;
     } else {
       hciErrors_.erase(op);
-      if (op == 0x2013 && options_.monitorInput)
+      if (op == 0x2013 && options_.logConnectionParameters)
         note("ble: HCI 0x2013 accepted; waiting for connection update result");
     }
     if (op == 0x200d && status && directLink_) failDirect("the controller refused the connection (status " + std::to_string(status) + ")");
@@ -328,7 +159,7 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
   }
   if (p[1] != 0x3e || p[2] < 1) return;
   if (p[3] == 0x03 && p[2] >= 10) {
-    if (options_.monitorInput) {
+    if (options_.logConnectionParameters) {
       char text[192];
       if (p[4]) {
         std::snprintf(text, sizeof text, "ble: HCI %u update failed (status 0x%02x)",
@@ -343,7 +174,7 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
     return;
   }
   if (p[3] == 0x06 && p[2] >= 11) {
-    if (options_.monitorInput) {
+    if (options_.logConnectionParameters) {
       char text[192];
       std::snprintf(text, sizeof text,
                     "ble: HCI %u peer request: interval %.2f..%.2fms, latency %u, timeout %ums",
@@ -354,7 +185,7 @@ void LinuxBleRadio::hciEvent(const uint8_t* p, std::size_t n) {
   }
   if ((p[3] != 0x01 && p[3] != 0x0a) || p[2] < (p[3] == 0x0a ? 31 : 19)) return;
   status = p[4];
-  if (!status && options_.monitorInput) {
+  if (!status && options_.logConnectionParameters) {
     const uint8_t* params = p + (p[3] == 0x0a ? 27 : 15);
     char text[224];
     std::snprintf(text, sizeof text,

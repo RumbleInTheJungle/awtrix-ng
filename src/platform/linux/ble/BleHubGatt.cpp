@@ -120,7 +120,6 @@ std::string BleHub::subscribe(const Key& key, const std::string& args) {
   const int id = users_[Key{key.script, static_cast<uint32_t>(number(args, "conn", 0))}];
   Subscription& sub = subscriptions_[key];
   sub.link = id;
-  sub.readInitial = api::memberFlag(args, "readInitial");
   sub.intervalMs = std::min<long long>(60000, std::max<long long>(0, number(args, "interval", 0)));
   if (!filtered) {
     for (const GattClient::Characteristic* c : targets) addToSubscription(key, id, *c);
@@ -142,8 +141,6 @@ std::string BleHub::subscribe(const Key& key, const std::string& args) {
       auto s = subscriptions_.find(key);
       auto l = links_.find(id);
       if (s == subscriptions_.end() || l == links_.end() || !l->second.client) return;
-      if (log) log("ble: " + l->second.peer.str() + " report reference at value handle " + std::to_string(value) +
-                   (ok ? ": " + toHex(content) + ", wanted " + toHex(descValue) : ": read failed"));
       if (ok && content == descValue) {
         for (const auto& svc : l->second.client->services())
           for (const GattClient::Characteristic& c : svc.characteristics)
@@ -166,94 +163,6 @@ void BleHub::addToSubscription(const Key& key, int id, const GattClient::Charact
   std::set<Key>& subs = l->second.subscribers[c.value];
   subs.insert(key);
   if (subs.size() == 1) enableNotifications(id, c.clientConfig, c.value, (c.props & att::kPropNotify) ? 1 : 2, false);
-  else if (l->second.notificationsEnabled.count(c.value)) readInitialReport(id, c.value);
-}
-
-// Xbox initialization reads the selected input value after the CCCD write. Only notifications
-// establish readiness: a readable snapshot alone does not prove that live input works.
-void BleHub::readInitialReport(int id, uint16_t handle) {
-  auto l = links_.find(id);
-  if (l == links_.end() || !l->second.client) return;
-  auto subscribers = l->second.subscribers.find(handle);
-  if (subscribers == l->second.subscribers.end()) return;
-  const bool wanted = std::any_of(subscribers->second.begin(), subscribers->second.end(), [this](const Key& key) {
-    auto s = subscriptions_.find(key);
-    return s != subscriptions_.end() && s->second.readInitial;
-  });
-  if (!wanted || !l->second.initialReads.insert(handle).second) return;
-  for (const auto& service : l->second.client->services()) {
-    for (const auto& c : service.characteristics) {
-      if (c.value != handle) continue;
-      const uint16_t enableValue = (c.props & att::kPropNotify) ? 1 : 2;
-      const uint16_t config = c.clientConfig;
-      readNotificationConfig(id, config, enableValue);
-      if (!(c.props & att::kPropRead)) {
-        if (log) log("ble: link " + std::to_string(id) + " initial input read skipped: handle " +
-                     std::to_string(handle) + " is not readable");
-        return;
-      }
-      if (!l->second.liveInputs.count(handle)) {
-        InputProbe probe;
-        probe.config = config;
-        probe.enableValue = enableValue;
-        l->second.inputProbes.emplace(handle, std::move(probe));
-        sampleInputReport(id, handle);
-      }
-      return;
-    }
-  }
-}
-
-void BleHub::readNotificationConfig(int id, uint16_t config, uint16_t expected) {
-  auto l = links_.find(id);
-  if (l == links_.end() || !l->second.client) return;
-  Bytes expectedConfig;
-  put16(expectedConfig, expected);
-  l->second.client->read(config, [this, id, config, expectedConfig](bool ok, uint8_t code, const Bytes& value) {
-    if (log) log("ble: link " + std::to_string(id) + " notification config readback handle " +
-                 std::to_string(config) + (ok ? ": " + toHex(value) + ", expected " + toHex(expectedConfig) +
-                 (value == expectedConfig ? " (match)" : " (mismatch)") :
-                 ": failed (ATT " + std::to_string(code) + ")"));
-  });
-}
-
-// Six samples, three seconds apart, compare input privately while notifications are absent.
-void BleHub::sampleInputReport(int id, uint16_t handle) {
-  auto l = links_.find(id);
-  if (l == links_.end() || !l->second.client || l->second.client->broken()) return;
-  auto probe = l->second.inputProbes.find(handle);
-  if (probe == l->second.inputProbes.end() || probe->second.pending) return;
-  probe->second.pending = true;
-  const unsigned sample = ++probe->second.samples;
-  l->second.client->read(handle, [this, id, handle, sample](bool ok, uint8_t code, const Bytes& value) {
-    auto l = links_.find(id);
-    if (l == links_.end()) return;
-    auto probe = l->second.inputProbes.find(handle);
-    if (probe == l->second.inputProbes.end()) return;
-    const char* changed = sample == 1 ? "baseline" : value == probe->second.previous ? "unchanged" : "changed";
-    if (log) log("ble: link " + std::to_string(id) + " input sample handle " + std::to_string(handle) +
-                 (ok ? ": " + std::to_string(value.size()) + " bytes; waiting for notifications; sample " +
-                       std::to_string(sample) + "/6 " + changed : ": failed (ATT " + std::to_string(code) + ")"));
-    if (!ok || sample >= 6) {
-      l->second.inputProbes.erase(probe);
-      return;
-    }
-    probe->second.previous = value;
-    probe->second.pending = false;
-    probe->second.nextAt = now_ + 3000;
-    // Pybricks' Technic Hub driver enables the CCCD with Write Command, not Write Request.
-    if (sample == 2) {
-      const uint16_t config = probe->second.config;
-      const uint16_t enableValue = probe->second.enableValue;
-      Bytes on;
-      put16(on, enableValue);
-      l->second.client->write(config, on, false, [this, id, config, enableValue](bool sent, uint8_t, const Bytes&) {
-        if (log) log("ble: link " + std::to_string(id) + " notification config Write Command handle " +
-                     std::to_string(config) + (sent ? " queued (no response); reading back" : " could not be queued"));
-        if (sent) readNotificationConfig(id, config, enableValue);
-      });
-    }
-  });
 }
 
 // Reads a value, pairing first when the peer keeps it for paired centrals.
@@ -295,17 +204,7 @@ void BleHub::enableNotifications(int id, uint16_t config, uint16_t handle, uint1
   Bytes on;
   put16(on, value);
   l->second.client->write(config, on, true, [this, id, config, handle, value, retried](bool ok, uint8_t code, const Bytes&) {
-    if (log) log("ble: link " + std::to_string(id) + " notifications value handle " + std::to_string(handle) +
-                 ", config handle " + std::to_string(config) + (retried ? ", retry: " : ": ") +
-                 (ok ? "enabled" : "failed (ATT " + std::to_string(code) + ")"));
-    if (ok) {
-      auto link = links_.find(id);
-      if (link != links_.end()) {
-        link->second.notificationsEnabled.insert(handle);
-        readInitialReport(id, handle);
-      }
-      return;
-    }
+    if (ok) return;
     const bool needsPairing = code == att::kInsufficientAuthentication || code == att::kInsufficientEncryption;
     auto link = links_.find(id);
     if (needsPairing && !retried && link != links_.end() && radio_.security(id) < 2 && radio_.secure(id, 2)) {
@@ -326,10 +225,6 @@ void BleHub::failSubscription(int id, uint16_t handle, uint8_t code) {
   if (s == l->second.subscribers.end()) return;
   const std::set<Key> keys = std::move(s->second);
   l->second.subscribers.erase(s);
-  l->second.notificationsEnabled.erase(handle);
-  l->second.initialReads.erase(handle);
-  l->second.inputProbes.erase(handle);
-  l->second.liveInputs.erase(handle);
   for (const Key& k : keys) {
     auto mine = subscriptions_.find(k);
     if (mine == subscriptions_.end()) continue;
@@ -355,10 +250,6 @@ void BleHub::releaseSubscription(Key key, bool tellScript) {
     s->second.erase(key);
     if (!s->second.empty()) continue;
     l->second.subscribers.erase(s);
-    l->second.notificationsEnabled.erase(handle);
-    l->second.initialReads.erase(handle);
-    l->second.inputProbes.erase(handle);
-    l->second.liveInputs.erase(handle);
     if (!l->second.client) continue;
     for (const GattClient::Service& svc : l->second.client->services())
       for (const GattClient::Characteristic& c : svc.characteristics)

@@ -144,22 +144,14 @@ void LinuxBleRadio::configure() {
     params.insert(params.end(), bonds_.localIrk().begin(), bonds_.localIrk().end());
     const int privacy = mgmt(kSetPrivacy, params);
     if (privacy != 0) {
-      fail("BLE identity test unavailable: cannot enable privacy (status " + std::to_string(privacy) + ")");
+      fail("cannot enable BLE privacy (status " + std::to_string(privacy) + ")");
       return;
     }
     note("ble: local BLE identity configured; LE privacy enabled for the whole adapter");
   }
-  const int sc = mgmt(kSetSecureConnections, {static_cast<uint8_t>(options_.secureConnections ? 1 : 0)});
-  if (!options_.secureConnections) {
-    if (sc != 0) {
-      fail("legacy pairing test unavailable: cannot disable LE Secure Connections (status " + std::to_string(sc) + ")");
-      return;
-    }
-    note("ble: legacy pairing test: LE Secure Connections disabled for the whole adapter; existing bonds unchanged");
-  } else {
-    note(sc == 0 ? "ble: LE Secure Connections enabled" :
-         "ble: LE Secure Connections unavailable (status " + std::to_string(sc) + ")");
-  }
+  const int sc = mgmt(kSetSecureConnections, {0x01});
+  note(sc == 0 ? "ble: LE Secure Connections enabled" :
+       "ble: LE Secure Connections unavailable (status " + std::to_string(sc) + ")");
   mgmt(kSetConnectable, {0x01});
   Bytes irks;
   put16(irks, static_cast<uint16_t>(bonds_.irks().size()));
@@ -179,7 +171,6 @@ void LinuxBleRadio::configure() {
     return;
   }
   state_ = State::On;
-  if (options_.monitorInput) openMonitor();
   note("ble: controller on as " + address_.str() + ", " + std::to_string(slots_) + " advert slots, " +
        std::to_string(bonds_.ltks().size()) + " bonds");
   if (events_.power) events_.power(Power::On, "");
@@ -195,7 +186,6 @@ void LinuxBleRadio::shutdown() {
   if (scanFd_ >= 0) ::close(scanFd_);
   if (listenFd_ >= 0) ::close(listenFd_);
   scanFd_ = listenFd_ = -1;
-  closeMonitor();
   const bool wasUp = state_ != State::Off;
   if (state_ == State::On) mgmt(kSetPowered, {0x00});
   state_ = State::Off;

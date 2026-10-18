@@ -56,8 +56,6 @@ jobs:
         run: cmake --build .pio/linux --parallel 2
       - name: Run Linux contracts
         run: ctest --test-dir .pio/linux --output-on-failure
-      - name: Test the Xbox Berry diagnostic in the vendored VM
-        run: python tools/tc002/diagnostics/test_xbox_ble.py
       - name: Verify actual systemd service isolation and restart persistence
         run: sudo python3 tests/linux/test_service.py --unit .pio/linux/awtrix-ng.service --binary .pio/linux/awtrix-linux --webui webui/index.html
 

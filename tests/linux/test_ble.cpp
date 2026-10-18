@@ -845,7 +845,7 @@ struct PadRig {
   std::vector<uint16_t> handles;
   std::vector<std::string> logs;
   int64_t now = 1000;
-  explicit PadRig(bool readableInput = false, bool compactInput = false) {
+  explicit PadRig(bool compactInput = false, bool readableInput = false) {
     hub.log = [this](const std::string& line) { logs.push_back(line); };
     check(::mkdtemp(directory) != nullptr, "gamepad fixture gets a directory");
     path = std::string(directory) + "/gamepad.json";
@@ -859,7 +859,7 @@ struct PadRig {
     radio.peerDb.addService(Uuid::from16(0x1812),
                             {{Uuid::from16(0x2a4b), att::kPropRead, false, reportMap, {}},
                              {Uuid::from16(0x2a4d), static_cast<uint8_t>(att::kPropNotify | (readableInput ? att::kPropRead : 0)),
-                              false, readableInput ? eightBitDoReport(15, 0) : Bytes{}, {{Uuid::from16(0x2908), Bytes{1, 1}}}},
+                              false, readableInput ? Bytes(16, 0) : Bytes{}, {{Uuid::from16(0x2908), Bytes{1, 1}}}},
                              {Uuid::from16(0x2a4d), att::kPropNotify, false, {}, {{Uuid::from16(0x2908), Bytes{2, 1}}}}},
                             handles);
     radio.peerDb.drain();
@@ -903,112 +903,11 @@ struct PadRig {
   }
 };
 
-void gamepadReadsSelectedInputAfterSubscribing() {
-  PadRig r(true);
-  r.pad->start(r.now);
-  r.pad->pair(r.now);
-  r.step();
-  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
-  int reads = 0;
-  bool configured = false;
-  for (const auto& packet : r.radio.sent) {
-    const Bytes& pdu = packet.second;
-    if (pdu.size() == 5 && pdu[0] == att::kWriteReq && le16(pdu.data() + 3) == 1) configured = true;
-    if (pdu.size() != 3 || pdu[0] != att::kReadReq) continue;
-    const uint16_t handle = le16(pdu.data() + 1);
-    check(handle != r.handles[2], "initial read does not touch the other input report");
-    if (handle == r.handles[1]) {
-      ++reads;
-      check(configured, "initial input read follows notification configuration");
-    }
-  }
-  check(reads == 1, "readable selected input is read once without waiting for button movement");
-  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
-    return has(line, "notification config readback handle") && has(line, "0100, expected 0100 (match)");
-  }), "notification configuration is read back and checked against the written value");
-  check(r.status() == GamepadStatus::Connecting, "a readable snapshot alone does not mark live input ready");
-  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
-    return has(line, "bytes; waiting for notifications");
-  }), "initial input read result is logged");
-  r.report(1);
-  check(r.status() == GamepadStatus::Ready && r.buttons() == 1, "notification after initial read establishes live input");
-  const auto sent = r.radio.sent.size();
-  r.now += 9000;
-  r.hub.tick(r.now);
-  r.step();
-  check(r.radio.sent.size() == sent, "live input cancels further diagnostic reads");
-  check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
-    return !packet.second.empty() && packet.second[0] == att::kWriteCmd;
-  }), "a working notification stream needs no configuration Write Command");
-}
 
-void gamepadRetriesConfigurationLikeTechnicHub() {
-  PadRig r(true);
-  unsigned configurations = 0;
-  r.radio.peerDb.onSubscribe = [&](int, uint16_t handle, uint16_t value) {
-    if (handle == r.handles[1] && value == 1 && ++configurations == 2)
-      r.radio.notifyPeer(handle, eightBitDoReport(15, 1));
-  };
-  r.pad->start(r.now);
-  r.pad->pair(r.now);
-  r.step();
-  r.advert("02:00:00:00:00:23", "8BitDo Ultimate");
-  check(r.status() == GamepadStatus::Connecting && configurations == 1,
-        "a peer silent after the first configuration stays connecting");
-  r.now += 3000;
-  r.hub.tick(r.now);
-  r.step();
-  check(r.status() == GamepadStatus::Ready && r.buttons() == 1,
-        "a peer activated by the repeated configuration becomes ready on its notification");
-  const auto count = std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
-    return packet.second.size() == 5 && packet.second[0] == att::kWriteCmd && le16(packet.second.data() + 3) == 1;
-  });
-  check(count == 1, "configuration retry uses one Write Command containing 0100");
-  const auto sent = r.radio.sent.size();
-  r.now += 9000;
-  r.hub.tick(r.now);
-  r.step();
-  check(r.radio.sent.size() == sent, "successful recovery stops polling and configuration retries");
-}
 
-void gamepadSamplingIsBoundedAndDoesNotPublishControls() {
-  PadRig r(true);
-  r.pad->start(r.now);
-  r.pad->pair(r.now);
-  r.step();
-  r.advert("68:6C:E6:7A:21:A5", "8BitDo Ultimate");
-  r.now += 2999;
-  r.hub.tick(r.now);
-  r.step();
-  const auto samples = [&] {
-    return std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [&](const auto& packet) {
-      return packet.second.size() == 3 && packet.second[0] == att::kReadReq &&
-             le16(packet.second.data() + 1) == r.handles[1];
-    });
-  };
-  check(samples() == 1, "input sampling waits three seconds between reads");
-  r.radio.peerDb.setValue(r.handles[1], eightBitDoReport(15, 1));
-  for (int i = 0; i < 10; ++i) {
-    r.now += 3000;
-    r.hub.tick(r.now);
-    r.step();
-  }
-  check(samples() == 6, "input sampling stops after six reads");
-  check(std::count_if(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
-    return !packet.second.empty() && packet.second[0] == att::kWriteCmd;
-  }) == 1, "a silent peer gets at most one configuration Write Command");
-  check(r.status() == GamepadStatus::Connecting && r.buttons() == 0,
-        "diagnostic snapshots never mark the gamepad ready or publish controls");
-  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
-    return has(line, "sample 2/6 changed");
-  }), "sample changes are logged without input payloads");
-  check(std::any_of(r.logs.begin(), r.logs.end(), [](const std::string& line) {
-    return has(line, "sample 3/6 unchanged");
-  }), "unchanged samples are distinguished from changes");
-}
 
 void xboxUsesDefaultMtu() {
-  PadRig r(false, true);
+  PadRig r(true, true);
   r.pad->start(r.now);
   r.pad->pair(r.now);
   r.step();
@@ -1017,6 +916,18 @@ void xboxUsesDefaultMtu() {
   check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [](const auto& packet) {
     return !packet.second.empty() && packet.second[0] == att::kMtuReq;
   }), "Xbox discovery does not initiate MTU exchange");
+  for (int i = 0; i < 7; ++i) {
+    r.now += 3000;
+    r.hub.tick(r.now);
+    r.step();
+  }
+  check(r.status() == GamepadStatus::Connecting && r.buttons() == 0,
+        "a readable but silent input never establishes readiness or publishes controls");
+  check(std::none_of(r.radio.sent.begin(), r.radio.sent.end(), [&](const auto& packet) {
+    const Bytes& pdu = packet.second;
+    return !pdu.empty() && (pdu[0] == att::kWriteCmd ||
+           (pdu.size() == 3 && pdu[0] == att::kReadReq && le16(pdu.data() + 1) == r.handles[1]));
+  }), "a silent subscription does not poll input or rewrite its configuration");
   Bytes input = eightBitDoReport(15, 1);
   input.resize(16);
   r.radio.notifyPeer(r.handles[1], input);
@@ -1423,9 +1334,6 @@ int main() {
   builtInGamepad();
   xboxUsesDefaultMtu();
   gamepadWaitsForEncryption();
-  gamepadReadsSelectedInputAfterSubscribing();
-  gamepadRetriesConfigurationLikeTechnicHub();
-  gamepadSamplingIsBoundedAndDoesNotPublishControls();
   gamepadSecurityFailure();
   pairingEnds();
   retriesSlowDown();

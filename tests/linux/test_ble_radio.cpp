@@ -19,7 +19,6 @@
 #include <vector>
 
 #include "platform/linux/ble/BleService.h"
-#include "platform/linux/ble/Att.h"
 #include "platform/linux/ble/LinuxBleRadio.h"
 
 using awtrix::ble::Address;
@@ -74,7 +73,7 @@ void appendWord(Bytes& out, uint16_t n) {
   out.push_back(static_cast<uint8_t>(n >> 8));
 }
 
-enum class Kind { Unbound, Management, Scanner, Monitor, Listener, Link };
+enum class Kind { Unbound, Management, Scanner, Listener, Link };
 struct Endpoint {
   int peer = -1;
   int protocol = 0;
@@ -98,8 +97,6 @@ struct SocketController {
   std::string kernelRelease = "4.9.84";
   bool controllerAttached = true;
   int scanner = -1;
-  int monitor = -1;
-  bool denyMonitor = false;
   int listener = -1;
   int outgoing = -1;
   int connectError = 0;
@@ -190,17 +187,14 @@ struct Fixture {
   int64_t now = 100;
 
   explicit Fixture(int attempts = 3, std::string release = "4.9.84", uint8_t scStatus = 0,
-                   bool monitor = false, bool denyMonitor = false, bool enableSc = true,
-                   bool privacy = false, uint8_t privacyStatus = 0) {
+                   bool logParameters = false, bool privacy = false, uint8_t privacyStatus = 0) {
     controller = &sockets;
     sockets.kernelRelease = std::move(release);
     sockets.secureConnectionsStatus = scStatus;
-    sockets.denyMonitor = denyMonitor;
     sockets.privacyStatus = privacyStatus;
     LinuxBleRadio::Options options;
     options.connectAttempts = attempts;
-    options.monitorInput = monitor;
-    options.secureConnections = enableSc;
+    options.logConnectionParameters = logParameters;
     options.privacy = privacy;
     options.log = [this](const std::string& line) { logs.push_back(line); };
     radio = std::make_unique<LinuxBleRadio>(std::move(options));
@@ -213,7 +207,7 @@ struct Fixture {
     };
     radio->setEvents(std::move(events));
     radio->power(true);
-    if ((!enableSc && scStatus != 0) || (privacy && privacyStatus != 0))
+    if (privacy && privacyStatus != 0)
       check(!powered, "a rejected pairing configuration does not power on");
     else check(powered && sockets.scanner >= 0 && sockets.listener >= 0, "radio powers through the socket backend");
   }
@@ -390,204 +384,9 @@ void pairingMethodMetadataContainsNoKeyMaterial() {
   }
 }
 
-void hciMonitorReceivesOnlyIncomingAttMetadata() {
-  Fixture fixture(3, "4.9.84", 0, true);
-  check(fixture.sockets.monitor >= 0 && fixture.sockets.monitor != fixture.sockets.scanner,
-        "HCI diagnostics use a separate monitor socket");
-  const auto record = [](uint16_t op, uint16_t index, uint16_t flags, const Bytes& fragment) {
-    Bytes packet;
-    appendWord(packet, op);
-    appendWord(packet, index);
-    appendWord(packet, static_cast<uint16_t>(4 + fragment.size()));
-    appendWord(packet, flags);
-    appendWord(packet, static_cast<uint16_t>(fragment.size()));
-    packet.insert(packet.end(), fragment.begin(), fragment.end());
-    return packet;
-  };
-  const auto send = [&](const Bytes& packet) {
-    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
-    fixture.dispatch(fixture.sockets.monitor, POLLIN);
-  };
-  // L2CAP ATT, notification handle 30, two opaque payload bytes.
-  const Bytes notify{5, 0, 4, 0, 0x1b, 30, 0, 0xaa, 0xbb};
-  send(record(4, 0, 0x2042, notify));
-  send(record(5, 1, 0x2042, notify));
-  send(record(5, 0, 0x2042, {1, 0, 4, 0, 0x0b}));
-  for (int i = 0; i < 5; ++i) send(record(5, 0, 0x2042, notify));
-  send(record(5, 0, 0x1042, {0xaa, 0xbb}));
-  send({5, 0, 0, 0, 99, 0});
-  const auto count = std::count_if(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("ATT RX notification value handle 30") != std::string::npos;
-  });
-  check(count == 3, "HCI notification logs are bounded and ignore TX and other controllers");
-  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("ATT RX opcode 11") != std::string::npos;
-  }), "HCI read responses prove monitor reception independently of the ATT socket");
-  fixture.radio->power(false);
-  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("notifications/indications 5, continuation fragments 1") != std::string::npos;
-  }), "HCI summary reports notification totals and undecoded continuation fragments");
-  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("malformed/truncated/over-limit records 1") != std::string::npos;
-  }), "malformed monitor records are counted rather than decoded");
-}
-
-void hciMonitorShowsScanParametersWithoutAddresses() {
-  Fixture fixture(3, "4.9.84", 0, true);
-  const auto send = [&](const Bytes& packet) {
-    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
-    fixture.dispatch(fixture.sockets.monitor, POLLIN);
-  };
-  const auto command = [](uint16_t opcode, const Bytes& params, uint16_t index = 0) {
-    Bytes packet;
-    appendWord(packet, 2);
-    appendWord(packet, index);
-    appendWord(packet, static_cast<uint16_t>(3 + params.size()));
-    appendWord(packet, opcode);
-    packet.push_back(static_cast<uint8_t>(params.size()));
-    packet.insert(packet.end(), params.begin(), params.end());
-    return packet;
-  };
-  send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
-  send(command(0x200b, {0, 96, 0, 48, 0, 1, 2}));
-  Bytes create(25, 0xa5);
-  create[4] = 0;
-  create[5] = 0;
-  create[12] = 1;
-  send(command(0x200d, create));
-  send(command(0x2005, Bytes(6, 0xa5)));
-  send(command(0x2019, Bytes(28, 0xa5)));
-  send(command(0x200b, {1, 1, 0, 1, 0, 9, 9}, 1));
-  send({2, 0, 0, 0, 2, 0, 0x0b, 0x20});
-  auto truncated = command(0x200b, {1, 2});
-  truncated[8] = 7;
-  send(truncated);
-  for (int i = 0; i < 10; ++i) send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
-  const auto count = [&](const std::string& part) {
-    return std::count_if(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
-      return line.find(part) != std::string::npos;
-    });
-  };
-  check(count("scan params: type=0 interval=96 window=48 own=1 filter=2") == 1,
-        "monitor exposes kernel scan address and filter policy as well as raw application commands");
-  check(count("create connection: own=1 filter=0 peer_type=0") == 1,
-        "connection diagnostics read address types at the correct HCI offsets without addresses");
-  check(count("set random address (value omitted)") == 1,
-        "random address configuration is visible without its value");
-  check(count("HCI TX scan params") == 6 && count("own=9") == 0,
-        "scan diagnostics have a per-monitor budget and ignore other adapters");
-  check(count("a5a5") == 0 && count("A5A5") == 0 && count("0x2019") == 0,
-        "HCI address bytes and encryption command payloads never appear in logs");
-  fixture.radio->power(false);
-  check(count("malformed/truncated/over-limit records 2") == 1,
-        "truncated HCI command records are counted and not decoded");
-  fixture.radio->power(true);
-  send(command(0x200b, {1, 160, 0, 48, 0, 0, 0}));
-  check(count("HCI TX scan params") == 7, "a new monitor session receives a fresh diagnostic budget");
-}
-
-void unavailableHciMonitorDoesNotBlockBluetooth() {
-  Fixture fixture(3, "4.9.84", 0, true, true);
-  check(fixture.powered && fixture.sockets.monitor < 0, "Bluetooth starts when monitor access is denied");
-  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("HCI input monitor unavailable") != std::string::npos;
-  }), "monitor failures are explicit");
-}
-
-void hciMonitorPairsWithoutLoggingSecrets() {
-  Fixture fixture(3, "4.9.84", 0, true);
-  const auto send = [&](uint16_t direction, uint16_t index, uint16_t flags, uint16_t cid, const Bytes& value,
-                        uint16_t advertisedLength = 0) {
-    Bytes packet;
-    appendWord(packet, direction);
-    appendWord(packet, index);
-    appendWord(packet, static_cast<uint16_t>(8 + value.size()));
-    appendWord(packet, flags);
-    appendWord(packet, static_cast<uint16_t>(4 + value.size()));
-    appendWord(packet, advertisedLength ? advertisedLength : static_cast<uint16_t>(value.size()));
-    appendWord(packet, cid);
-    packet.insert(packet.end(), value.begin(), value.end());
-    fixture.sockets.sendTo(fixture.sockets.monitor, packet);
-    fixture.dispatch(fixture.sockets.monitor, POLLIN);
-  };
-  send(4, 0, 0x2042, 6, {1, 3, 0, 1, 16, 7, 7});
-  send(5, 0, 0x2042, 6, {2, 3, 0, 1, 16, 7, 7});
-  for (uint8_t opcode = 3; opcode <= 10; ++opcode) {
-    if (opcode == 5) continue;
-    Bytes secret(17, 0xa5);
-    secret[0] = opcode;
-    send(4, 0, 0x2042, 6, secret);
-    send(5, 0, 0x2042, 6, secret);
-  }
-  for (int i = 0; i < 6; ++i) {
-    send(5, 0, 0x2042, 6, {5, 4});
-    send(4, 0, 0x2042, 4, {0x52, 31, 0, 0xaa, 0xbb});
-  }
-  send(4, 0, 0x2042, 4, {0x12, 31, 0, 1, 0});
-  send(4, 0, 0x2043, 4, {0x12, 31, 0, 1, 0});
-  send(4, 1, 0x2042, 6, {1, 9, 9, 9, 9, 9, 9});
-  send(5, 0, 0x1042, 6, {1, 9, 9, 9, 9, 9, 9});
-  send(5, 0, 0x2042, 6, {1, 9}, 7);
-  send(5, 0, 0x2042, 6, {2, 9});
-  const auto count = [&](const std::string& part) {
-    return std::count_if(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
-      return line.find(part) != std::string::npos;
-    });
-  };
-  check(count("SMP TX request: io=3 oob=0 auth=1 keysize=16 dist=7/7") == 1,
-        "monitor logs actual outgoing pairing capabilities");
-  check(count("SMP RX response: io=3 oob=0 auth=1 keysize=16 dist=7/7") == 1,
-        "monitor logs actual incoming pairing capabilities");
-  check(count("SMP RX failed reason 4") == 2, "SMP event detail is bounded per connection handle");
-  check(count("handle 66 ATT TX write command handle 31, L2CAP length 5") == 4,
-        "ATT outgoing write diagnostics are bounded");
-  check(count("handle 67 ATT TX write request handle 31, L2CAP length 5") == 1,
-        "write request diagnostics are independent per connection handle");
-  fixture.radio->power(false);
-  check(count("handle 66 SMP TX packets 8, opcodes 1,3,4,6,7,8,9,10") == 1,
-        "outgoing SMP summary includes only packet counts and opcode names");
-  check(count("handle 66 SMP RX packets 14, opcodes 2,3,4,5,6,7,8,9,10") == 1,
-        "incoming SMP summary counts even suppressed events");
-  check(count("notifications/indications 0, continuation fragments 1") == 1,
-        "SMP diagnostics preserve RX continuation and ATT counters");
-  check(count("malformed/truncated/over-limit records 2") == 1,
-        "truncated pairing capabilities are rejected without inspecting missing bytes");
-  check(count("a5a5") == 0 && count("A5A5") == 0 && count("aabb") == 0 && count("AABB") == 0,
-        "neither pairing key material nor written values appear in monitor logs");
-  check(count("io=9") == 0, "other adapters and continuation fragments are not decoded as SMP capabilities");
-}
-
-void socketNotificationDiagnosticsAreBounded() {
-  Fixture fixture;
-  const int fd = fixture.accept();
-  std::vector<Bytes> received;
-  BleRadio::Events events;
-  events.att = [&](int, const uint8_t* p, std::size_t n) { received.emplace_back(p, p + n); };
-  fixture.radio->setEvents(std::move(events));
-  const std::vector<Bytes> packets = {
-    {awtrix::ble::att::kReadRsp, 0},
-    {awtrix::ble::att::kNotify, 30, 0, 1, 2},
-    {awtrix::ble::att::kIndicate, 32, 0, 3},
-    {awtrix::ble::att::kNotify},
-    {awtrix::ble::att::kNotify, 30, 0, 4}
-  };
-  for (const auto& packet : packets) {
-    fixture.sockets.sendTo(fd, packet);
-    fixture.dispatch(fd, POLLIN);
-  }
-  check(received == packets, "socket diagnostics preserve every ATT packet including malformed input");
-  const auto count = std::count_if(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("ATT socket received") != std::string::npos;
-  });
-  check(count == 3, "only the first three notifications or indications are logged at the socket");
-  check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [](const std::string& line) {
-    return line.find("notification handle 30, 2 bytes") != std::string::npos;
-  }), "socket diagnostic identifies the value handle and payload length");
-}
-
 void localBleIdentityConfiguration() {
   for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
-    Fixture fixture(3, "4.9.84", 0, false, false, true, true, status);
+    Fixture fixture(3, "4.9.84", 0, false, true, status);
     const auto& commands = fixture.sockets.managementCommands;
     const auto privacy = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
       return word(command.data()) == 0x002f;
@@ -637,25 +436,6 @@ void secureConnectionsConfiguration() {
     check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
       return line.find(expected) != std::string::npos;
     }), "Secure Connections result is visible, and unsupported controllers still power on");
-  }
-  for (uint8_t status : {uint8_t{0}, uint8_t{0x0c}}) {
-    Fixture fixture(3, "4.9.84", status, false, false, false);
-    const auto& commands = fixture.sockets.managementCommands;
-    auto secure = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
-      return word(command.data()) == 0x002d;
-    });
-    auto power = std::find_if(commands.begin(), commands.end(), [](const Bytes& command) {
-      return word(command.data()) == 0x0005;
-    });
-    check(secure != commands.end() && secure->size() == 7 && (*secure)[6] == 0,
-          "legacy comparison explicitly disables Secure Connections");
-    check(status == 0 ? power != commands.end() && secure < power : power == commands.end(),
-          "legacy comparison powers on only after the controller accepts its security mode");
-    const std::string expected = status == 0 ? "disabled for the whole adapter; existing bonds unchanged" :
-                                             "legacy pairing test unavailable";
-    check(std::any_of(fixture.logs.begin(), fixture.logs.end(), [&](const std::string& line) {
-      return line.find(expected) != std::string::npos;
-    }), "legacy comparison logs both its scope and a rejected mode change");
   }
 }
 
@@ -1235,15 +1015,6 @@ extern "C" int __wrap_bind(int fd, const sockaddr* address, socklen_t length) {
   auto& endpoint = controller->endpoints.at(fd);
   if (endpoint.protocol == kHci && length >= sizeof(HciAddress)) {
     const auto* hci = reinterpret_cast<const HciAddress*>(address);
-    if (hci->channel == 2) {
-      if (controller->denyMonitor) {
-        errno = EACCES;
-        return -1;
-      }
-      endpoint.kind = Kind::Monitor;
-      controller->monitor = fd;
-      return 0;
-    }
     endpoint.kind = hci->channel == 3 ? Kind::Management : Kind::Scanner;
     if (endpoint.kind == Kind::Scanner) controller->scanner = fd;
   }
@@ -1350,11 +1121,6 @@ extern "C" int __wrap_uname(utsname* information) {
 int main() {
   technicTimingUsesTheSocketHandle();
   pairingMethodMetadataContainsNoKeyMaterial();
-  hciMonitorReceivesOnlyIncomingAttMetadata();
-  hciMonitorShowsScanParametersWithoutAddresses();
-  hciMonitorPairsWithoutLoggingSecrets();
-  unavailableHciMonitorDoesNotBlockBluetooth();
-  socketNotificationDiagnosticsAreBounded();
   secureConnectionsConfiguration();
   localBleIdentityConfiguration();
   connectionParameterDiagnostics();

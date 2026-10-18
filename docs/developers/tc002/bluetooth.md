@@ -6,8 +6,8 @@ only: [tc002]
 
 The TC002's Bluetooth controller is part of the AIC8800 chip on a UART. When `awtrix-tc002d`
 brings Bluetooth up, it sends a 104-byte AIC always-on (AON) parameter block with the vendor
-command `0xfc4d`. This page describes the Linux BLE connection policy, gamepad
-diagnostics and the provenance and licence of that block. The block lives as `kConfig` in
+command `0xfc4d`. This page documents the format of that block, where its values come from and
+the licence that applies. The block lives as `kConfig` in
 [`src/platform/tc002/daemon/BtService.cpp`](https://github.com/Blueforcer/awtrix-ng/blob/main/src/platform/tc002/daemon/BtService.cpp);
 the attribution file is
 [`tools/tc002/bluetooth/NOTICE`](https://github.com/Blueforcer/awtrix-ng/blob/main/tools/tc002/bluetooth/NOTICE).
@@ -59,122 +59,60 @@ uses a workaround only on kernels whose release starts with `4.9.`:
 HCI command failures include the opcode and status in the BLE log. This addresses
 the kernel guards without changing controller connection limits or the AON block.
 
-With gamepad diagnostics enabled, ordinary and enhanced LE Connection Complete events log the
-HCI handle, local central/peripheral role, connection interval in milliseconds, peripheral
-latency in connection events and supervision timeout in milliseconds. LE Connection Update
-Complete logs the applied values on success or only the status on failure. LE Remote Connection
-Parameter Request logs the requested interval range, latency and timeout. Compact lines keep the
-timeout visible in the clock log. These observations send no replies. Only events delivered
-by the kernel are visible. Absence of a request log does not exclude negotiation through L2CAP
-or inside the controller.
+## Xbox 1914 pairing
 
-## Xbox 1914 connection profile
+Gamepad sessions request encryption before GATT discovery, including incoming
+ATT sockets adopted from a pending connection. Security failure or cancellation
+prevents discovery. Only a valid input notification makes the gamepad Ready.
 
-Gamepad sessions connect with `secure: true`. The hub waits for encryption before
-GATT discovery, including for incoming ATT sockets adopted from a pending outgoing
-connection. Security failure, disconnect or cancellation ends the attempt without
-starting discovery. Shared GATT clients retain their negotiated settings. The
-gamepad also checks security before reading the HID Report Map. Only a valid input
-notification makes the gamepad Ready; readable snapshots alone do not.
+With gamepad support enabled, the radio configures LE privacy using a persistent
+local Identity Resolving Key (IRK). `BondStore` generates this 128-bit key with
+`getrandom` and atomically saves it as `local_irk` beside peer bonds. Removing a
+peer preserves the local identity across radio and clock restarts. Existing bond
+files remain readable. An empty store path keeps keys in memory only. Failure to
+generate, persist or configure the identity stops Bluetooth startup. Key bytes
+are never logged.
 
-With gamepad support enabled, `BleService` selects the tested compatibility profile:
+LE Secure Connections is enabled when supported. Xbox-named or unnamed gamepads
+use ATT MTU 23 without a local
+exchange and request a 50 ms interval, zero peripheral latency and a 600 ms
+supervision timeout after encryption. Existing shared-client settings are
+preserved. Long report maps remain readable through Read Blob requests. Timing
+requires a confirmed local central role and uses the ATT socket's HCI handle.
+A failed request is logged without blocking discovery. The connection-update
+result records the applied timing.
 
-| Scope | Behavior |
-|---|---|
-| Whole adapter | Legacy pairing with bonding and security level 2; LE Secure Connections disabled. |
-| Whole adapter | LE Privacy mode 1 with a persistent local Identity Resolving Key (IRK). |
-| Xbox-named or unnamed gamepad connection | ATT MTU 23 without a local MTU exchange request. |
-| Xbox-named or unnamed gamepad connection | One request for a 50 ms interval, zero peripheral latency and a 600 ms supervision timeout after encryption. |
+The MTU and timing choices were compared with
+[Pybricks' Technic Hub driver](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/lib/pbio/drv/bluetooth/bluetooth_stm32_cc2640.c).
+Their individual necessity is not established. Privacy affects all peers on the
+adapter. Other radio users do not request privacy. Phone
+coexistence and other gamepad models need hardware verification with this profile.
 
-The legacy, MTU and timing settings were compared with
-[Pybricks' Technic Hub CC2640 driver](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/lib/pbio/drv/bluetooth/bluetooth_stm32_cc2640.c).
-Their individual necessity has not been isolated on hardware. They remain part of
-the tested profile. This does not replace the Linux Bluetooth stack. Other radio
-clients retain the default Secure Connections policy and do not request privacy.
-Adapter-wide settings also affect other peers. Existing peers may need to pair
-again after privacy is first enabled. Phone coexistence with this profile is not
-yet hardware-verified.
+### Verification and open work
 
-`BondStore` generates the local 128-bit IRK with `getrandom` and atomically stores
-it as `local_irk` beside peer keys in the private pairing JSON. Removing a peer
-preserves the host identity. It survives radio power cycles and process restarts.
-With an empty store path, local and peer keys remain in memory only. A failed
-persistent write prevents sharing a newly generated identity. Generation, storage,
-privacy-command or legacy-mode configuration failure stops Bluetooth startup with
-an explicit error. No key bytes are logged.
+The working baseline `effaf28` was tested on a TC002 with Xbox Wireless
+Controller model 1914, controller firmware `5.9.2709.0`. The contributor confirmed
+buttons, sticks, controller off/on reconnection and clock-reboot reconnection.
+Local identity exchange in both directions coincided with the first live input.
+A comparison build, `4f2d948`, completed fresh pairing with LE Secure Connections
+and reached Ready with live input. Two preceding attempts timed out. The successful
+attempt took 19 seconds, including a rejected scan and retry. Buttons, sticks and
+both reconnection tests were also confirmed for this build. The tester reported
+2 m separation for the failed attempts and 15 cm for success. This does not isolate
+distance as the cause. The reduced candidate keeps Secure Connections enabled and
+removes the investigation monitor and subscription probes. Its hardware verification
+is pending.
 
-Fresh pairing is required for a peer to learn the local identity. In the failing
-Xbox session the host offered `dist=5/7`; identity information came only from the
-controller. With privacy enabled the negotiated distribution became `dist=3/3`,
-and outgoing and incoming SMP types 8 and 9 were observed. Input notifications then
-reached the HCI monitor, ATT socket, Berry app and normal gamepad client. Similar
-host-identity symptoms are reported in [BlueZ issue 155](https://github.com/bluez/bluez/issues/155)
-and [xpadneo issue 449](https://github.com/atar-axis/xpadneo/issues/449), which also
-include conflicting reports about privacy stability.
+Initial connections can still be delayed by HCI `0x200b` status `0x12` and
+`Invalid argument`: the kernel requests privacy scan filter policy 2 or 3 before
+a later connection succeeds. Deterministic first-attempt connection remains open.
+Host tests cover identity persistence, configuration failures, encrypted discovery,
+shared-link ownership, MTU and timing. They cannot establish radio interoperability.
 
-The server caps peer-initiated MTU exchange at 23 only on selected connections.
-An already negotiated larger MTU on a shared link is preserved. Long report maps
-remain readable with Read Blob requests. Timing requests obtain the HCI handle
-from the ATT socket and require a confirmed local central role. A missing handle,
-unknown/peripheral role or failed send is logged and discovery continues. The
-request is not retried or awaited. Check the connection-update result, not just
-`queued` or `accepted`, for the applied timing. Remote parameter requests are not
-overridden.
-
-### Verification and remaining limitation
-
-The TC002 with Xbox Wireless Controller model 1914, controller firmware
-`5.9.2709.0`, was tested on build `effaf28`. The normal gamepad client reached
-Ready and the UI assigned Player 1. Button and joystick input, automatic reconnection
-after controller power cycling, and reconnection after a clock reboot were
-confirmed by the hardware tester. No controller firmware update was required.
-
-Initial connection can still fail before SMP. The HCI monitor shows the
-application's active scan with `own=0 filter=0`, followed by a kernel passive scan
-with `own=1 filter=2` or `filter=3`. The adapter rejects the latter with status
-`0x12`, and the socket returns `Invalid argument`. A later attempt using
-`create connection: own=1 filter=0` succeeds. Linux 4.9 can select extended filter
-policies when privacy is enabled. The first-attempt scan issue remains unresolved;
-automatic reconnection success does not establish deterministic first-attempt
-connection. The tested build remains the comparison point for further changes.
-
-### Diagnostic tools and bounds
-
-[The Berry diagnostic app](https://github.com/Blueforcer/awtrix-ng/tree/main/tools/tc002/diagnostics) provides
-one explicit, bounded test per start request without rebuilding firmware. Its
-optional report-map and Exit Suspend steps support comparisons. It does not
-register a player. [BlueZ's HID client](https://github.com/bluez/bluez/blob/master/src/shared/hog.c)
-and [Bluepad32's BLE setup](https://github.com/ricardoquesada/bluepad32/blob/main/src/components/bluepad32/bt/uni_bt_le.c)
-are additional references.
-
-Gamepad logs name security, report-map and subscription phases, including the last
-phase on timeout. Report-map messages describe expected format, not received input.
-Malformed/wrong-length input diagnostics stop after three reports per connection.
-
-The internal `readInitial` subscription option enables CCCD readback and, while no
-input arrives, up to six private input comparisons three seconds apart. Reads
-never establish Ready. The second successful silent sample retries the CCCD once
-as a Write Command and reads it back. Local sending is not a peer acknowledgement.
-Sampling stops on input, read error, unsubscribe or disconnect. Ordinary script
-subscriptions do not request these probes.
-
-Gamepad support opens a separate HCI monitor socket. Failure is logged without
-blocking Bluetooth. Per handle, it logs at most three incoming ATT opcodes, three
-notification headers, four outgoing ATT write headers and four SMP capability or
-failure messages. SMP summaries count sent/received packets and their opcode sets.
-Only request/response capabilities or failure reasons are decoded. Key distribution,
-confirms, random values and public keys contribute only their opcode. Types 8 and
-9 identify identity information and identity address information. ATT logs expose
-handles and lengths, not input or written values.
-
-At most eight scan, create-connection or random-address commands are logged per
-monitor session, including kernel commands. Scan interval/window units are
-0.625 ms. Logs include address types and filter policy, not address values.
-Other HCI payloads, including encryption commands, are not decoded. The monitor
-tracks at most sixteen handles and processes at most thirty-two records per
-dispatch. It does not reassemble continuation fragments. Malformed, truncated or
-over-limit records are counted. No capture is written to disk. Host-side observations
-do not prove over-the-air receipt or peer acceptance.
+Detailed investigation tools remain on the fork's
+[archived working branch](https://github.com/RumbleInTheJungle/awtrix-ng/tree/archive/xbox-1914-working-20261018/tools/tc002/diagnostics).
+The reduced client logs setup phases and failures but neither polls readable
+input nor retries notification configuration as a diagnostic experiment.
 
 ## Two-controller gamepad registry
 

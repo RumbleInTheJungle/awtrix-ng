@@ -288,11 +288,6 @@ void BleHub::tick(int64_t nowMs) {
     if (it != links_.end() && it->second.client) it->second.client->tick(nowMs);
   }
   std::vector<int> broken;
-  std::vector<std::pair<int, uint16_t>> samples;
-  for (const auto& [id, link] : links_)
-    for (const auto& [handle, probe] : link.inputProbes)
-      if (!probe.pending && nowMs >= probe.nextAt) samples.emplace_back(id, handle);
-  for (const auto& [id, handle] : samples) sampleInputReport(id, handle);
   for (const auto& [id, link] : links_)
     if (link.client && link.client->broken() && link.ready) broken.push_back(id);
   for (int id : broken) {
