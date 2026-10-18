@@ -59,6 +59,62 @@ uses a workaround only on kernels whose release starts with `4.9.`:
 HCI command failures include the opcode and status in the BLE log. This addresses
 the kernel guards without changing controller connection limits or the AON block.
 
+## Xbox 1914 pairing
+
+Gamepad sessions request encryption before GATT discovery, including incoming
+ATT sockets adopted from a pending connection. Security failure or cancellation
+prevents discovery. Only a valid input notification makes the gamepad Ready.
+
+With gamepad support enabled, the radio configures LE privacy using a persistent
+local Identity Resolving Key (IRK). `BondStore` generates this 128-bit key with
+`getrandom` and atomically saves it as `local_irk` beside peer bonds. Removing a
+peer preserves the local identity across radio and clock restarts. Existing bond
+files remain readable. An empty store path keeps keys in memory only. Failure to
+generate, persist or configure the identity stops Bluetooth startup. Key bytes
+are never logged.
+
+LE Secure Connections is enabled when supported. Xbox-named or unnamed gamepads
+use ATT MTU 23 without a local exchange and request a 50 ms interval, zero
+peripheral latency and a 600 ms
+supervision timeout after encryption. Existing shared-client settings are
+preserved. Long report maps remain readable through Read Blob requests. Timing
+requires a confirmed local central role and uses the ATT socket's HCI handle.
+A failed request is logged without blocking discovery. The connection-update
+result records the applied timing.
+
+The MTU and timing choices were compared with
+[Pybricks' Technic Hub driver](https://github.com/pybricks/pybricks-micropython/blob/e6f705cb275dd7df9c5c7a9f23a927485c180eec/lib/pbio/drv/bluetooth/bluetooth_stm32_cc2640.c).
+Their individual necessity is not established. Privacy affects all peers on the
+adapter. Other radio users do not request privacy. Phone coexistence and other
+gamepad models need hardware verification with this profile.
+
+### Verification and open work
+
+The reduced implementation was tested as build `444070e` on a TC002 with Xbox
+Wireless Controller model 1914, controller firmware `5.9.2709.0`. Fresh pairing
+used LE Secure Connections and reached Ready in 10 seconds. Reconnection reached
+Ready in 11 seconds, measured from the first logged attempt. Both included a
+rejected scan and retry. The contributor confirmed buttons, sticks, controller
+off/on reconnection at approximately 2 m, and reconnection after a clock reboot.
+The recorded disconnect between tests followed intentional controller shutdown.
+
+Earlier investigation showed that local identity exchange in both directions
+coincided with the first live input. An isolated comparison, `4f2d948`, confirmed
+that LE Secure Connections can remain enabled. Earlier first-pairing attempts
+also timed out. Successful tests do not establish deterministic first-attempt
+connection or isolate distance as the cause of failures.
+
+Initial connections can still be delayed by HCI `0x200b` status `0x12` and
+`Invalid argument`: the kernel requests privacy scan filter policy 2 or 3 before
+a later connection succeeds. Deterministic first-attempt connection remains open.
+Host tests cover identity persistence, configuration failures, encrypted discovery,
+shared-link ownership, MTU and timing. They cannot establish radio interoperability.
+
+Detailed investigation tools remain on the fork's
+[archived working branch](https://github.com/RumbleInTheJungle/awtrix-ng/tree/archive/xbox-1914-working-20261018/tools/tc002/diagnostics).
+The reduced client logs setup phases and failures but neither polls readable
+input nor retries notification configuration as a diagnostic experiment.
+
 ## Two-controller gamepad registry
 
 `GamepadManager` owns one HID session per device slot on the `BleService` worker. Both sessions'
